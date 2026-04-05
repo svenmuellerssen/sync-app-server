@@ -1,0 +1,117 @@
+package de.sync.app.server
+
+import de.sync.app.server.data.*
+import jakarta.transaction.Transactional
+import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PostMapping
+import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestHeader
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.RequestParam
+import org.springframework.web.bind.annotation.RestController
+import java.util.UUID
+
+@RestController
+@RequestMapping("/contacts")
+class ContactsController(private val contactRepository: ContactRepository) {
+
+    @GetMapping
+    fun getContactCount(
+        @RequestHeader("X-Sync-Token") token: String,
+        @RequestParam accountName: String,
+    ): ResponseEntity<ContactCountResponse> {
+        val count = contactRepository.countByAccountName(accountName)
+        return ResponseEntity.ok(ContactCountResponse(accountName = accountName, count = count))
+    }
+
+    @Transactional
+    @PostMapping
+    fun uploadContacts(
+        @RequestHeader("X-Sync-Token") token: String,
+        @RequestBody batch: ContactBatchRequest,
+    ): ResponseEntity<BackupResponse> {
+        val now = System.currentTimeMillis()
+        var stored = 0
+
+        for (dto in batch.contacts) {
+            val existing = contactRepository.findById(dto.lookupKey).orElse(null)
+            if (existing != null && existing.lastUpdatedAt >= dto.lastUpdatedAt) continue
+
+            // Delete first to avoid duplicate PK on re-insert (orphanRemoval handles children)
+            if (existing != null) contactRepository.deleteById(dto.lookupKey)
+
+            val entity = ContactEntity(
+                lookupKey = dto.lookupKey,
+                accountName = batch.accountName,
+                lastUpdatedAt = dto.lastUpdatedAt,
+                createdAt = existing?.createdAt ?: now,
+                displayName = dto.displayName,
+                givenName = dto.givenName,
+                middleName = dto.middleName,
+                familyName = dto.familyName,
+                namePrefix = dto.namePrefix,
+                nameSuffix = dto.nameSuffix,
+                phoneticGivenName = dto.phoneticGivenName,
+                phoneticMiddleName = dto.phoneticMiddleName,
+                phoneticFamilyName = dto.phoneticFamilyName,
+                notes = dto.notes.joinToString("\n").ifEmpty { null },
+                phoneNumbers = dto.phoneNumbers.map {
+                    ContactPhoneEntity(lookupKey = dto.lookupKey, number = it.number, type = it.type, label = it.label)
+                }.toMutableList(),
+                emailAddresses = dto.emailAddresses.map {
+                    ContactEmailEntity(lookupKey = dto.lookupKey, address = it.address, type = it.type, label = it.label)
+                }.toMutableList(),
+                postalAddresses = dto.postalAddresses.map {
+                    ContactAddressEntity(lookupKey = dto.lookupKey, street = it.street, city = it.city, region = it.region, postCode = it.postCode, country = it.country, type = it.type, label = it.label)
+                }.toMutableList(),
+                organizations = dto.organizations.map {
+                    ContactOrganizationEntity(lookupKey = dto.lookupKey, company = it.company, title = it.title, department = it.department)
+                }.toMutableList(),
+                instantMessengers = dto.instantMessengers.map {
+                    ContactImEntity(lookupKey = dto.lookupKey, handle = it.handle, protocol = it.protocol, customProtocol = it.customProtocol)
+                }.toMutableList(),
+            )
+
+            contactRepository.save(entity)
+            stored++
+        }
+
+        val revision = UUID.randomUUID().toString()
+        return ResponseEntity.ok(BackupResponse(revision = revision, contactsStored = stored))
+    }
+}
+
+data class ContactBatchRequest(
+    val accountName: String = "",
+    val contacts: List<ContactDtoRequest> = emptyList(),
+)
+
+data class ContactDtoRequest(
+    val lookupKey: String,
+    val lastUpdatedAt: Long,
+    val displayName: String? = null,
+    val givenName: String? = null,
+    val middleName: String? = null,
+    val familyName: String? = null,
+    val namePrefix: String? = null,
+    val nameSuffix: String? = null,
+    val phoneticGivenName: String? = null,
+    val phoneticMiddleName: String? = null,
+    val phoneticFamilyName: String? = null,
+    val phoneNumbers: List<PhoneDtoRequest> = emptyList(),
+    val emailAddresses: List<EmailDtoRequest> = emptyList(),
+    val postalAddresses: List<AddressDtoRequest> = emptyList(),
+    val organizations: List<OrgDtoRequest> = emptyList(),
+    val instantMessengers: List<ImDtoRequest> = emptyList(),
+    val notes: List<String> = emptyList(),
+)
+
+data class PhoneDtoRequest(val number: String, val type: Int, val label: String? = null)
+data class EmailDtoRequest(val address: String, val type: Int, val label: String? = null)
+data class AddressDtoRequest(val street: String? = null, val city: String? = null, val region: String? = null, val postCode: String? = null, val country: String? = null, val type: Int, val label: String? = null)
+data class OrgDtoRequest(val company: String? = null, val title: String? = null, val department: String? = null)
+data class ImDtoRequest(val handle: String, val protocol: Int, val customProtocol: String? = null)
+
+data class BackupResponse(val revision: String, val contactsStored: Int)
+data class ContactCountResponse(val accountName: String, val count: Long)
