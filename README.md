@@ -26,6 +26,10 @@ Spring Boot Backend für die Sync App. Nimmt Kontakt-Backups vom Android-Gerät 
 | `POST` | `/auth/logout` | Session beenden: `{ token }` |
 | `POST` | `/contacts` | Kontakt-Batch hochladen → `{ revision, contactsStored }` |
 | `GET` | `/contacts?accountName=<n>` | Anzahl gespeicherter Kontakte abrufen → `{ accountName, count }` |
+| `GET` | `/contacts/all?accountName=<n>` | Alle gespeicherten Kontakte abrufen (für Restore) |
+| `POST` | `/appointments` | Termin-Batch hochladen → `{ revision, appointmentsStored }` |
+| `GET` | `/appointments/count?accountName=<n>` | Anzahl gespeicherter Termine abrufen → `{ accountName, count }` |
+| `GET` | `/appointments?accountName=<n>` | Alle gespeicherten Termine abrufen (für Restore) |
 
 ### Auth
 - Sessions werden in der **Datenbank** gespeichert (Tabelle `sessions`) — überleben Server-Neustarts
@@ -38,6 +42,13 @@ Spring Boot Backend für die Sync App. Nimmt Kontakt-Backups vom Android-Gerät 
 - Upsert-Logik: Kontakt wird nur gespeichert wenn `lastUpdatedAt` neuer ist als der gespeicherte Wert
 - Bei existierendem Kontakt: `deleteById` + neu einfügen (wegen JPA `orphanRemoval` bei Kind-Tabellen)
 - `@Transactional` — bei Fehler wird alles zurückgerollt
+
+### POST /appointments
+- Body: `{ accountName, appointments: [ AppointmentDto... ] }`
+- Upsert anhand `deviceId` (geräteinterner Termin-Identifier)
+- `AppointmentDto` enthält: `title`, `dtStart`, `dtEnd`, `allDay`, `rrule`, `timezone`, `location`, `organizer`, `calendarName`, `calendarAccountType`, `calendarAccountName`
+- `calendarAccountType = "LOCAL"` → lokaler Gerät-Kalender (wird beim Restore wiederhergestellt)
+- `calendarAccountType = "com.google"` etc. → Cloud-Kalender (nur gespeichert, kein Restore nötig)
 
 ---
 
@@ -55,6 +66,20 @@ Haupttabelle `contacts` mit FK-Kind-Tabellen:
 | `contact_instant_messengers` | Instant-Messenger-Handles |
 
 `lookup_key` ist der stabile Android-Kontakt-Identifier (`LOOKUP_KEY`) — dient als Server-PK.
+
+Termin-Tabelle `appointments` (keine Kind-Tabellen):
+
+| Tabelle | Inhalt |
+|---|---|
+| `appointments` | Alle Terminfelder: `device_id` (PK-Kandidat), `account_name`, `title`, `dt_start`, `dt_end`, `all_day`, `rrule`, `timezone`, `location`, `organizer`, `calendar_name`, `calendar_account_type`, `calendar_account_name`, `last_updated_at` |
+
+`device_id` ist die Android-interne Kalender-Event-ID. Beim Restore wird `calendar_account_type = "LOCAL"` gefiltert.
+
+Session-Tabelle:
+
+| Tabelle | Inhalt |
+|---|---|
+| `sessions` | `token` (PK), `account_name`, `expires_at`, `created_at` |
 
 DDL wird automatisch von Hibernate generiert (`spring.jpa.hibernate.ddl-auto=update`).
 

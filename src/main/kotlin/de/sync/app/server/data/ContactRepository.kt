@@ -6,4 +6,6 @@ import org.springframework.data.jpa.repository.Query
 interface ContactRepository : JpaRepository<ContactEntity, String> {
 
     fun countByAccountName(accountName: String): Long
+
+    fun findAllByAccountName(accountName: String): List<ContactEntity>
 }

@@ -17,6 +17,15 @@ import java.util.UUID
 class ContactsController(private val contactRepository: ContactRepository) {
 
     @GetMapping
+    fun getContacts(
+        @RequestHeader("X-Sync-Token") token: String,
+        @RequestParam accountName: String,
+    ): ResponseEntity<ContactListResponse> {
+        val contacts = contactRepository.findAllByAccountName(accountName).map { it.toDto() }
+        return ResponseEntity.ok(ContactListResponse(accountName = accountName, contacts = contacts))
+    }
+
+    @GetMapping("/count")
     fun getContactCount(
         @RequestHeader("X-Sync-Token") token: String,
         @RequestParam accountName: String,
@@ -115,3 +124,44 @@ data class ImDtoRequest(val handle: String, val protocol: Int, val customProtoco
 
 data class BackupResponse(val revision: String, val contactsStored: Int)
 data class ContactCountResponse(val accountName: String, val count: Long)
+data class ContactListResponse(val accountName: String, val contacts: List<ContactDtoResponse>)
+
+data class ContactDtoResponse(
+    val lookupKey: String,
+    val lastUpdatedAt: Long,
+    val displayName: String?,
+    val givenName: String?,
+    val middleName: String?,
+    val familyName: String?,
+    val namePrefix: String?,
+    val nameSuffix: String?,
+    val phoneticGivenName: String?,
+    val phoneticMiddleName: String?,
+    val phoneticFamilyName: String?,
+    val phoneNumbers: List<PhoneDtoRequest>,
+    val emailAddresses: List<EmailDtoRequest>,
+    val postalAddresses: List<AddressDtoRequest>,
+    val organizations: List<OrgDtoRequest>,
+    val instantMessengers: List<ImDtoRequest>,
+    val notes: List<String>,
+)
+
+private fun ContactEntity.toDto() = ContactDtoResponse(
+    lookupKey = lookupKey,
+    lastUpdatedAt = lastUpdatedAt,
+    displayName = displayName,
+    givenName = givenName,
+    middleName = middleName,
+    familyName = familyName,
+    namePrefix = namePrefix,
+    nameSuffix = nameSuffix,
+    phoneticGivenName = phoneticGivenName,
+    phoneticMiddleName = phoneticMiddleName,
+    phoneticFamilyName = phoneticFamilyName,
+    phoneNumbers = phoneNumbers.map { PhoneDtoRequest(it.number, it.type, it.label) },
+    emailAddresses = emailAddresses.map { EmailDtoRequest(it.address, it.type, it.label) },
+    postalAddresses = postalAddresses.map { AddressDtoRequest(it.street, it.city, it.region, it.postCode, it.country, it.type, it.label) },
+    organizations = organizations.map { OrgDtoRequest(it.company, it.title, it.department) },
+    instantMessengers = instantMessengers.map { ImDtoRequest(it.handle, it.protocol, it.customProtocol) },
+    notes = notes?.split("\n")?.filter { it.isNotEmpty() } ?: emptyList(),
+)
