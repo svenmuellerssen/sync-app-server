@@ -16,7 +16,7 @@ data class AppointmentEntity(
     @Column(name = "device_id", nullable = false)
     val deviceId: Long,
 
-    @Column(name = "title", nullable = false)
+    @Column(name = "title", nullable = false, columnDefinition = "TEXT")
     val title: String,
 
     @Column(name = "description", columnDefinition = "TEXT")
@@ -34,19 +34,19 @@ data class AppointmentEntity(
     @Column(name = "all_day", nullable = false)
     val allDay: Boolean,
 
-    @Column(name = "timezone", nullable = false)
+    @Column(name = "timezone", nullable = false, columnDefinition = "TEXT")
     val timezone: String,
 
-    @Column(name = "rrule")
+    @Column(name = "rrule", columnDefinition = "TEXT")
     val rrule: String? = null,
 
-    @Column(name = "location")
+    @Column(name = "location", columnDefinition = "TEXT")
     val location: String? = null,
 
-    @Column(name = "organizer")
+    @Column(name = "organizer", columnDefinition = "TEXT")
     val organizer: String? = null,
 
-    @Column(name = "calendar_name")
+    @Column(name = "calendar_name", columnDefinition = "TEXT")
     val calendarName: String? = null,
 
     @Column(name = "calendar_account_type")

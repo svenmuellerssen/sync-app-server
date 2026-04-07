@@ -45,10 +45,10 @@ class AppointmentsController(private val appointmentRepository: AppointmentRepos
         var stored = 0
 
         for (dto in batch.appointments) {
-            val existing = appointmentRepository.findByAccountNameAndDeviceId(batch.accountName, dto.deviceId)
-            if (existing != null && existing.lastUpdatedAt >= dto.lastUpdatedAt) continue
+            val existing = appointmentRepository.findAllByAccountNameAndDeviceId(batch.accountName, dto.deviceId)
+            val firstCreatedAt = existing.minOfOrNull { it.createdAt }
 
-            if (existing != null) appointmentRepository.deleteById(existing.id)
+            existing.forEach { appointmentRepository.deleteById(it.id) }
 
             val entity = AppointmentEntity(
                 id = UUID.randomUUID().toString(),
@@ -68,7 +68,7 @@ class AppointmentsController(private val appointmentRepository: AppointmentRepos
                 calendarAccountType = dto.calendarAccountType,
                 calendarAccountName = dto.calendarAccountName,
                 lastUpdatedAt = dto.lastUpdatedAt,
-                createdAt = existing?.createdAt ?: now,
+                createdAt = firstCreatedAt ?: now,
             )
 
             appointmentRepository.save(entity)

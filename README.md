@@ -45,6 +45,7 @@ Spring Boot Backend für die Sync App. Nimmt Kontakt-Backups vom Android-Gerät 
 
 ### POST /appointments
 - Body: `{ accountName, appointments: [ AppointmentDto... ] }`
+- **Kein Skip basierend auf `lastUpdatedAt`** — der Server überschreibt jeden eingehenden Termin immer (Kalender-Sync sendet immer alle Termine)
 - Upsert anhand `deviceId` (geräteinterner Termin-Identifier)
 - `AppointmentDto` enthält: `title`, `dtStart`, `dtEnd`, `allDay`, `rrule`, `timezone`, `location`, `organizer`, `calendarName`, `calendarAccountType`, `calendarAccountName`
 - `calendarAccountType = "LOCAL"` → lokaler Gerät-Kalender (wird beim Restore wiederhergestellt)
