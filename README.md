@@ -46,10 +46,15 @@ Spring Boot Backend für die Sync App. Nimmt Kontakt-Backups vom Android-Gerät 
 ### POST /appointments
 - Body: `{ accountName, appointments: [ AppointmentDto... ] }`
 - **Kein Skip basierend auf `lastUpdatedAt`** — der Server überschreibt jeden eingehenden Termin immer (Kalender-Sync sendet immer alle Termine)
-- Upsert anhand `deviceId` (geräteinterner Termin-Identifier)
+- Upsert anhand `deviceId` (geräteinterner Termin-Identifier) via `findAllByAccountNameAndDeviceId()` — gibt `List` zurück (nicht Single-Entity) um `NonUniqueResultException` bei vorhandenen Duplikaten zu vermeiden; alle Treffer werden gelöscht, dann der neue Datensatz eingefügt
 - `AppointmentDto` enthält: `title`, `dtStart`, `dtEnd`, `allDay`, `rrule`, `timezone`, `location`, `organizer`, `calendarName`, `calendarAccountType`, `calendarAccountName`
 - `calendarAccountType = "LOCAL"` → lokaler Gerät-Kalender (wird beim Restore wiederhergestellt)
 - `calendarAccountType = "com.google"` etc. → Cloud-Kalender (nur gespeichert, kein Restore nötig)
+
+> **Achtung Spaltentypen:** `location`, `organizer`, `calendar_account_type`, `calendar_account_name` müssen in MySQL `TEXT` sein. Hibernate `ddl-auto=update` ändert keine bestehenden Spalten. Nach initialem Deployment einmalig manuell ausführen:
+> ```sql
+> ALTER TABLE appointments MODIFY location TEXT, MODIFY organizer TEXT, MODIFY calendar_account_type TEXT, MODIFY calendar_account_name TEXT;
+> ```
 
 ---
 
