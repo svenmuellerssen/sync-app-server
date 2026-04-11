@@ -60,5 +60,9 @@ data class AppointmentEntity(
 
     @Column(name = "created_at", nullable = false)
     val createdAt: Long,
+
+    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "appointment_id")
+    val attendees: MutableList<AppointmentAttendeeEntity> = mutableListOf(),
 )
 

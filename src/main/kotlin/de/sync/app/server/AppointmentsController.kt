@@ -1,5 +1,6 @@
 package de.sync.app.server
 
+import de.sync.app.server.data.AppointmentAttendeeEntity
 import de.sync.app.server.data.AppointmentEntity
 import de.sync.app.server.data.AppointmentRepository
 import jakarta.transaction.Transactional
@@ -17,6 +18,7 @@ import java.util.UUID
 @RequestMapping("/appointments")
 class AppointmentsController(private val appointmentRepository: AppointmentRepository) {
 
+    @Transactional
     @GetMapping
     fun getAppointments(
         @RequestHeader("X-Sync-Token") token: String,
@@ -26,6 +28,7 @@ class AppointmentsController(private val appointmentRepository: AppointmentRepos
         return ResponseEntity.ok(AppointmentListResponse(accountName = accountName, appointments = appointments))
     }
 
+    @Transactional
     @GetMapping("/count")
     fun getAppointmentCount(
         @RequestHeader("X-Sync-Token") token: String,
@@ -71,6 +74,17 @@ class AppointmentsController(private val appointmentRepository: AppointmentRepos
                 createdAt = firstCreatedAt ?: now,
             )
 
+            entity.attendees.addAll(dto.attendees.map { a ->
+                AppointmentAttendeeEntity(
+                    appointmentId    = entity.id,
+                    name             = a.name,
+                    email            = a.email,
+                    type             = a.type,
+                    status           = a.status,
+                    contactLookupKey = a.contactLookupKey,
+                )
+            })
+
             appointmentRepository.save(entity)
             stored++
         }
@@ -79,6 +93,14 @@ class AppointmentsController(private val appointmentRepository: AppointmentRepos
         return ResponseEntity.ok(AppointmentBackupResponse(revision = revision, appointmentsStored = stored))
     }
 }
+
+data class AttendeeDto(
+    val name: String? = null,
+    val email: String? = null,
+    val type: Int? = null,
+    val status: Int? = null,
+    val contactLookupKey: String? = null,
+)
 
 data class AppointmentBatchRequest(
     val accountName: String = "",
@@ -100,6 +122,7 @@ data class AppointmentDtoRequest(
     val calendarName: String? = null,
     val calendarAccountType: String? = null,
     val calendarAccountName: String? = null,
+    val attendees: List<AttendeeDto> = emptyList(),
     val lastUpdatedAt: Long,
 )
 
@@ -122,10 +145,11 @@ data class AppointmentDtoResponse(
     val calendarName: String?,
     val calendarAccountType: String?,
     val calendarAccountName: String?,
+    val attendees: List<AttendeeDto>,
     val lastUpdatedAt: Long,
 )
 
-private fun AppointmentEntity.toDto()= AppointmentDtoResponse(
+private fun AppointmentEntity.toDto() = AppointmentDtoResponse(
     deviceId = deviceId,
     title = title,
     description = description,
@@ -140,6 +164,7 @@ private fun AppointmentEntity.toDto()= AppointmentDtoResponse(
     calendarName        = calendarName,
     calendarAccountType = calendarAccountType,
     calendarAccountName = calendarAccountName,
+    attendees = attendees.map { AttendeeDto(name = it.name, email = it.email, type = it.type, status = it.status, contactLookupKey = it.contactLookupKey) },
     lastUpdatedAt       = lastUpdatedAt,
 )
 

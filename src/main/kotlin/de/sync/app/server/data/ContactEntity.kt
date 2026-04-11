@@ -3,10 +3,17 @@ package de.sync.app.server.data
 import jakarta.persistence.*
 
 @Entity
-@Table(name = "contacts")
+@Table(
+    name = "contacts",
+    uniqueConstraints = [UniqueConstraint(name = "uq_contacts_lookup_key", columnNames = ["lookup_key"])]
+)
 data class ContactEntity(
 
     @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Column(name = "id", nullable = false)
+    val id: Long = 0,
+
     @Column(name = "lookup_key", nullable = false)
     val lookupKey: String,
 
@@ -49,24 +56,24 @@ data class ContactEntity(
     @Column(name = "notes", columnDefinition = "TEXT")
     val notes: String? = null,
 
-    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
-    @JoinColumn(name = "lookup_key")
+    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "contact_id")
     val phoneNumbers: MutableList<ContactPhoneEntity> = mutableListOf(),
 
-    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
-    @JoinColumn(name = "lookup_key")
+    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "contact_id")
     val emailAddresses: MutableList<ContactEmailEntity> = mutableListOf(),
 
-    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
-    @JoinColumn(name = "lookup_key")
+    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "contact_id")
     val postalAddresses: MutableList<ContactAddressEntity> = mutableListOf(),
 
-    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
-    @JoinColumn(name = "lookup_key")
+    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "contact_id")
     val organizations: MutableList<ContactOrganizationEntity> = mutableListOf(),
 
-    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
-    @JoinColumn(name = "lookup_key")
+    @OneToMany(cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
+    @JoinColumn(name = "contact_id")
     val instantMessengers: MutableList<ContactImEntity> = mutableListOf(),
 )
 
@@ -75,7 +82,7 @@ data class ContactEntity(
 data class ContactPhoneEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
-    @Column(name = "lookup_key", nullable = false) val lookupKey: String,
+    @Column(name = "contact_id", nullable = false) val contactId: Long = 0,
     val number: String,
     val type: Int,
     val label: String? = null,
@@ -86,7 +93,7 @@ data class ContactPhoneEntity(
 data class ContactEmailEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
-    @Column(name = "lookup_key", nullable = false) val lookupKey: String,
+    @Column(name = "contact_id", nullable = false) val contactId: Long = 0,
     val address: String,
     val type: Int,
     val label: String? = null,
@@ -97,7 +104,7 @@ data class ContactEmailEntity(
 data class ContactAddressEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
-    @Column(name = "lookup_key", nullable = false) val lookupKey: String,
+    @Column(name = "contact_id", nullable = false) val contactId: Long = 0,
     val street: String? = null,
     val city: String? = null,
     val region: String? = null,
@@ -112,7 +119,7 @@ data class ContactAddressEntity(
 data class ContactOrganizationEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
-    @Column(name = "lookup_key", nullable = false) val lookupKey: String,
+    @Column(name = "contact_id", nullable = false) val contactId: Long = 0,
     val company: String? = null,
     val title: String? = null,
     val department: String? = null,
@@ -123,7 +130,7 @@ data class ContactOrganizationEntity(
 data class ContactImEntity(
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
-    @Column(name = "lookup_key", nullable = false) val lookupKey: String,
+    @Column(name = "contact_id", nullable = false) val contactId: Long = 0,
     val handle: String,
     val protocol: Int,
     @Column(name = "custom_protocol") val customProtocol: String? = null,

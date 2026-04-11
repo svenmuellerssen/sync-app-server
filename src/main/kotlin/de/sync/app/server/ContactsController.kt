@@ -16,6 +16,7 @@ import java.util.UUID
 @RequestMapping("/contacts")
 class ContactsController(private val contactRepository: ContactRepository) {
 
+    @Transactional
     @GetMapping
     fun getContacts(
         @RequestHeader("X-Sync-Token") token: String,
@@ -25,6 +26,7 @@ class ContactsController(private val contactRepository: ContactRepository) {
         return ResponseEntity.ok(ContactListResponse(accountName = accountName, contacts = contacts))
     }
 
+    @Transactional
     @GetMapping("/count")
     fun getContactCount(
         @RequestHeader("X-Sync-Token") token: String,
@@ -44,11 +46,10 @@ class ContactsController(private val contactRepository: ContactRepository) {
         var stored = 0
 
         for (dto in batch.contacts) {
-            val existing = contactRepository.findById(dto.lookupKey).orElse(null)
+            val existing = contactRepository.findByLookupKey(dto.lookupKey)
             if (existing != null && existing.lastUpdatedAt >= dto.lastUpdatedAt) continue
 
-            // Delete first to avoid duplicate PK on re-insert (orphanRemoval handles children)
-            if (existing != null) contactRepository.deleteById(dto.lookupKey)
+            if (existing != null) contactRepository.deleteById(existing.id)
 
             val entity = ContactEntity(
                 lookupKey = dto.lookupKey,
@@ -66,19 +67,19 @@ class ContactsController(private val contactRepository: ContactRepository) {
                 phoneticFamilyName = dto.phoneticFamilyName,
                 notes = dto.notes.joinToString("\n").ifEmpty { null },
                 phoneNumbers = dto.phoneNumbers.map {
-                    ContactPhoneEntity(lookupKey = dto.lookupKey, number = it.number, type = it.type, label = it.label)
+                    ContactPhoneEntity(number = it.number, type = it.type, label = it.label)
                 }.toMutableList(),
                 emailAddresses = dto.emailAddresses.map {
-                    ContactEmailEntity(lookupKey = dto.lookupKey, address = it.address, type = it.type, label = it.label)
+                    ContactEmailEntity(address = it.address, type = it.type, label = it.label)
                 }.toMutableList(),
                 postalAddresses = dto.postalAddresses.map {
-                    ContactAddressEntity(lookupKey = dto.lookupKey, street = it.street, city = it.city, region = it.region, postCode = it.postCode, country = it.country, type = it.type, label = it.label)
+                    ContactAddressEntity(street = it.street, city = it.city, region = it.region, postCode = it.postCode, country = it.country, type = it.type, label = it.label)
                 }.toMutableList(),
                 organizations = dto.organizations.map {
-                    ContactOrganizationEntity(lookupKey = dto.lookupKey, company = it.company, title = it.title, department = it.department)
+                    ContactOrganizationEntity(company = it.company, title = it.title, department = it.department)
                 }.toMutableList(),
                 instantMessengers = dto.instantMessengers.map {
-                    ContactImEntity(lookupKey = dto.lookupKey, handle = it.handle, protocol = it.protocol, customProtocol = it.customProtocol)
+                    ContactImEntity(handle = it.handle, protocol = it.protocol, customProtocol = it.customProtocol)
                 }.toMutableList(),
             )
 
