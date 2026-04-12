@@ -1,8 +1,8 @@
 package de.sync.app.server
 
-import de.sync.app.server.data.*
-import jakarta.transaction.Transactional
+import de.sync.app.server.graph.*
 import org.springframework.http.ResponseEntity
+import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
@@ -16,7 +16,6 @@ import java.util.UUID
 @RequestMapping("/contacts")
 class ContactsController(private val contactRepository: ContactRepository) {
 
-    @Transactional
     @GetMapping
     fun getContacts(
         @RequestHeader("X-Sync-Token") token: String,
@@ -26,7 +25,6 @@ class ContactsController(private val contactRepository: ContactRepository) {
         return ResponseEntity.ok(ContactListResponse(accountName = accountName, contacts = contacts))
     }
 
-    @Transactional
     @GetMapping("/count")
     fun getContactCount(
         @RequestHeader("X-Sync-Token") token: String,
@@ -46,12 +44,17 @@ class ContactsController(private val contactRepository: ContactRepository) {
         var stored = 0
 
         for (dto in batch.contacts) {
-            val existing = contactRepository.findByLookupKey(dto.lookupKey)
+            // Upsert per syncId (preferred) or fallback to lookupKey for older app versions
+            val existing = if (dto.syncId != null) {
+                contactRepository.findBySyncId(dto.syncId)
+            } else {
+                contactRepository.findByLookupKey(dto.lookupKey)
+            }
             if (existing != null && existing.lastUpdatedAt >= dto.lastUpdatedAt) continue
+            if (existing != null) contactRepository.deleteById(existing.id!!)
 
-            if (existing != null) contactRepository.deleteById(existing.id)
-
-            val entity = ContactEntity(
+            val node = ContactNode(
+                syncId = dto.syncId ?: UUID.randomUUID().toString(),
                 lookupKey = dto.lookupKey,
                 accountName = batch.accountName,
                 lastUpdatedAt = dto.lastUpdatedAt,
@@ -67,23 +70,23 @@ class ContactsController(private val contactRepository: ContactRepository) {
                 phoneticFamilyName = dto.phoneticFamilyName,
                 notes = dto.notes.joinToString("\n").ifEmpty { null },
                 phoneNumbers = dto.phoneNumbers.map {
-                    ContactPhoneEntity(number = it.number, type = it.type, label = it.label)
+                    PhoneNumberNode(number = it.number, type = it.type, label = it.label)
                 }.toMutableList(),
                 emailAddresses = dto.emailAddresses.map {
-                    ContactEmailEntity(address = it.address, type = it.type, label = it.label)
+                    EmailNode(address = it.address, type = it.type, label = it.label)
                 }.toMutableList(),
                 postalAddresses = dto.postalAddresses.map {
-                    ContactAddressEntity(street = it.street, city = it.city, region = it.region, postCode = it.postCode, country = it.country, type = it.type, label = it.label)
+                    PostalAddressNode(street = it.street, city = it.city, region = it.region, postCode = it.postCode, country = it.country, type = it.type, label = it.label)
                 }.toMutableList(),
                 organizations = dto.organizations.map {
-                    ContactOrganizationEntity(company = it.company, title = it.title, department = it.department)
+                    OrganizationNode(company = it.company, title = it.title, department = it.department)
                 }.toMutableList(),
                 instantMessengers = dto.instantMessengers.map {
-                    ContactImEntity(handle = it.handle, protocol = it.protocol, customProtocol = it.customProtocol)
+                    InstantMessengerNode(handle = it.handle, protocol = it.protocol, customProtocol = it.customProtocol)
                 }.toMutableList(),
             )
 
-            contactRepository.save(entity)
+            contactRepository.save(node)
             stored++
         }
 
@@ -98,6 +101,7 @@ data class ContactBatchRequest(
 )
 
 data class ContactDtoRequest(
+    val syncId: String? = null,     // UUID — von App generiert; null bei alten App-Versionen
     val lookupKey: String,
     val lastUpdatedAt: Long,
     val displayName: String? = null,
@@ -128,6 +132,7 @@ data class ContactCountResponse(val accountName: String, val count: Long)
 data class ContactListResponse(val accountName: String, val contacts: List<ContactDtoResponse>)
 
 data class ContactDtoResponse(
+    val syncId: String,
     val lookupKey: String,
     val lastUpdatedAt: Long,
     val displayName: String?,
@@ -147,7 +152,8 @@ data class ContactDtoResponse(
     val notes: List<String>,
 )
 
-private fun ContactEntity.toDto() = ContactDtoResponse(
+internal fun ContactNode.toDto() = ContactDtoResponse(
+    syncId = syncId,
     lookupKey = lookupKey,
     lastUpdatedAt = lastUpdatedAt,
     displayName = displayName,
@@ -166,3 +172,4 @@ private fun ContactEntity.toDto() = ContactDtoResponse(
     instantMessengers = instantMessengers.map { ImDtoRequest(it.handle, it.protocol, it.customProtocol) },
     notes = notes?.split("\n")?.filter { it.isNotEmpty() } ?: emptyList(),
 )
+
