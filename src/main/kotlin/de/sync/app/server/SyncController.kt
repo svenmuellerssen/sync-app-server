@@ -16,12 +16,13 @@ import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 
+private data class DedupKey(val title: String, val dtStart: Long, val dtEnd: Long?, val rrule: String?)
+
 @RestController
 @RequestMapping("/sync")
 class SyncController(
     private val contactRepository: ContactRepository,
     private val appointmentRepository: AppointmentRepository,
-    private val sessionRepository: SessionRepository,
     private val sharedCalendarRepository: SharedCalendarRepository,
 ) {
 
@@ -31,12 +32,13 @@ class SyncController(
         @RequestHeader("X-Sync-Token") token: String,
         @RequestBody request: ManifestRequest,
     ): ResponseEntity<ManifestResponse> {
-        if (!sessionRepository.findById(token).isPresent) {
-            return ResponseEntity.status(401).build()
-        }
+        val emptyContacts = ContactManifest(emptyList(), emptyList(), emptyList())
+        val emptyAppointments = AppointmentManifest(emptyList(), emptyList(), emptyList())
 
-        val contactManifest = buildContactManifest(request)
-        val appointmentManifest = buildAppointmentManifest(request)
+        val contactManifest = if (request.type == "contacts" || request.type == "all")
+            buildContactManifest(request) else emptyContacts
+        val appointmentManifest = if (request.type == "appointments" || request.type == "all")
+            buildAppointmentManifest(request) else emptyAppointments
 
         return ResponseEntity.ok(ManifestResponse(contactManifest, appointmentManifest))
     }
@@ -62,44 +64,39 @@ class SyncController(
         val serverNodes = appointmentRepository.findAllByAccountName(request.accountName)
         val serverMap = serverNodes.associateBy { it.syncId }
 
+        // Phone is source of truth for this account's own appointments.
+        // Delete anything on the server that the phone no longer has.
         val missingOnPhone = serverNodes.filter { it.syncId !in localMap }
-        missingOnPhone.forEach { node ->
-            if (node.calendarAccountType != null && node.calendarAccountType != "LOCAL"
-                && node.calendarAccountType != "de.sync.contacts") {
-                appointmentRepository.deleteById(node.id!!)
+        missingOnPhone.forEach { node -> appointmentRepository.deleteById(node.id!!) }
+
+        // Deduplicate: keep oldest entry (smallest createdAt) per (title, dtStart, dtEnd, rrule)
+        val surviving = serverNodes.filter { it.syncId in localMap }
+        surviving.groupBy { DedupKey(it.title, it.dtStart, it.dtEnd, it.rrule) }.forEach { (_, group) ->
+            if (group.size > 1) {
+                val oldest = group.minByOrNull { it.createdAt }!!
+                group.filter { it.id != oldest.id }.forEach { appointmentRepository.deleteById(it.id!!) }
             }
         }
 
-        val toDownload = missingOnPhone
-            .filter { it.calendarAccountType == null || it.calendarAccountType == "LOCAL" }
-            .map { it.toDto() }
-            .toMutableList()
+        val toUpload = (localMap.keys - serverMap.keys).toList()
 
-        val toUpdate = serverNodes.filter { node ->
-            val local = localMap[node.syncId]
-            local != null &&
-                node.lastUpdatedAt > local.lastUpdatedAt &&
-                (node.calendarAccountType == null || node.calendarAccountType == "LOCAL")
-        }.map { it.toDto() }.toMutableList()
-
-        // SharedCalendar events: include events from all calendars where this account is a member
+        // SharedCalendar events from other members: download to this phone if missing
         val sharedCalendars = sharedCalendarRepository.findAllByMemberAccountName(request.accountName)
         val sharedCalendarAppointments = sharedCalendars.flatMap { sc ->
             appointmentRepository.findAllBySharedCalendarId(sc.calendarId)
         }
         val sharedToDownload = sharedCalendarAppointments
-            .filter { it.syncId !in localMap }
+            .filter { it.syncId !in localMap && it.accountName != request.accountName }
             .map { it.toDto() }
         val sharedToUpdate = sharedCalendarAppointments.filter { node ->
             val local = localMap[node.syncId]
-            local != null && node.lastUpdatedAt > local.lastUpdatedAt
+            local != null && node.accountName != request.accountName && node.lastUpdatedAt > local.lastUpdatedAt
         }.map { it.toDto() }
 
-        toDownload.addAll(sharedToDownload)
-        toUpdate.addAll(sharedToUpdate)
-
-        val toUpload = (localMap.keys - serverMap.keys).toList()
-
-        return AppointmentManifest(toUpload = toUpload, toDownload = toDownload, toUpdate = toUpdate)
+        return AppointmentManifest(
+            toUpload = toUpload,
+            toDownload = sharedToDownload.toMutableList(),
+            toUpdate = sharedToUpdate.toMutableList(),
+        )
     }
 }

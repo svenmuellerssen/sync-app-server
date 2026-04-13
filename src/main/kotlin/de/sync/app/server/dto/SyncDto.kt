@@ -9,6 +9,8 @@ data class ManifestRequest(
     val accountName: String,
     val contacts: List<SyncEntry> = emptyList(),
     val appointments: List<SyncEntry> = emptyList(),
+    /** "contacts" | "appointments" | "all" — controls which manifest parts are computed */
+    val type: String = "all",
 )
 
 /** Eine einzelne Zeile im Manifest: syncId + Timestamp des lokalen Eintrags. */

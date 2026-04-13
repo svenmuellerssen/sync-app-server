@@ -1,6 +1,5 @@
 package de.sync.app.server
 
-import de.sync.app.server.cache.SessionRepository
 import de.sync.app.server.graph.*
 import org.springframework.http.ResponseEntity
 import org.springframework.transaction.annotation.Transactional
@@ -20,7 +19,6 @@ class AppointmentsController(
     private val contactRepository: ContactRepository,
     private val sharedCalendarRepository: SharedCalendarRepository,
     private val googleCalendarRepository: GoogleCalendarRepository,
-    private val sessionRepository: SessionRepository,
 ) {
 
     @GetMapping
@@ -28,7 +26,6 @@ class AppointmentsController(
         @RequestHeader("X-Sync-Token") token: String,
         @RequestParam accountName: String,
     ): ResponseEntity<AppointmentListResponse> {
-        if (!sessionRepository.findById(token).isPresent) return ResponseEntity.status(401).build()
         val appointments = appointmentRepository.findAllByAccountName(accountName).map { it.toDto() }
         return ResponseEntity.ok(AppointmentListResponse(accountName = accountName, appointments = appointments))
     }
@@ -38,7 +35,6 @@ class AppointmentsController(
         @RequestHeader("X-Sync-Token") token: String,
         @RequestParam accountName: String,
     ): ResponseEntity<AppointmentCountResponse> {
-        if (!sessionRepository.findById(token).isPresent) return ResponseEntity.status(401).build()
         val count = appointmentRepository.countByAccountName(accountName)
         return ResponseEntity.ok(AppointmentCountResponse(accountName = accountName, count = count))
     }
@@ -49,7 +45,6 @@ class AppointmentsController(
         @RequestHeader("X-Sync-Token") token: String,
         @RequestBody batch: AppointmentBatchRequest,
     ): ResponseEntity<AppointmentBackupResponse> {
-        if (!sessionRepository.findById(token).isPresent) return ResponseEntity.status(401).build()
         val now = System.currentTimeMillis()
         var stored = 0
 
@@ -62,6 +57,10 @@ class AppointmentsController(
                 val contact = a.email?.let { contactRepository.findByAccountNameAndEmail(batch.accountName, it) }
                     ?: a.contactLookupKey?.let { contactRepository.findByLookupKey(it) }
                 AttendeeNode(name = a.name, email = a.email, type = a.type, status = a.status, contact = contact)
+            }.toMutableList()
+
+            val reminders = dto.reminders.map { r ->
+                ReminderNode(minutes = r.minutes, method = r.method)
             }.toMutableList()
 
             // Resolve SharedCalendar or GoogleCalendar relationship
@@ -107,9 +106,11 @@ class AppointmentsController(
                 calendarAccountType = dto.calendarAccountType,
                 calendarAccountName = dto.calendarAccountName,
                 calendarColor = dto.calendarColor,
+                status = dto.status?.toString(),
                 lastUpdatedAt = dto.lastUpdatedAt,
                 createdAt = createdAt,
                 attendees = attendees,
+                reminders = reminders,
                 sharedCalendar = sharedCal,
                 googleCalendar = googleCal,
             )
@@ -122,6 +123,11 @@ class AppointmentsController(
         return ResponseEntity.ok(AppointmentBackupResponse(revision = revision, appointmentsStored = stored))
     }
 }
+
+data class ReminderDto(
+    val minutes: Int,
+    val method: Int = 1,
+)
 
 data class AttendeeDto(
     val name: String? = null,
@@ -152,10 +158,12 @@ data class AppointmentDtoRequest(
     val calendarAccountType: String? = null,
     val calendarAccountName: String? = null,
     val calendarColor: Int? = null,
-    val calendarId: String? = null,         // for Google/SharedCal lookup
-    val sharedCalendarId: String? = null,   // for de.sync.contacts calendars
+    val calendarId: String? = null,         // device-local calendar ID as string
+    val sharedCalendarId: String? = null,
     val accessLevel: Int? = null,
+    val status: Int? = null,                // 0=TENTATIVE, 1=CONFIRMED, 2=CANCELLED
     val attendees: List<AttendeeDto> = emptyList(),
+    val reminders: List<ReminderDto> = emptyList(),
     val lastUpdatedAt: Long,
 )
 
@@ -181,7 +189,9 @@ data class AppointmentDtoResponse(
     val calendarColor: Int?,
     val sharedCalendarId: String? = null,
     val googleCalendarId: String? = null,
+    val status: Int? = null,
     val attendees: List<AttendeeDto>,
+    val reminders: List<ReminderDto>,
     val lastUpdatedAt: Long,
 )
 
@@ -203,6 +213,7 @@ internal fun AppointmentNode.toDto() = AppointmentDtoResponse(
     calendarColor = calendarColor,
     sharedCalendarId = sharedCalendar?.calendarId,
     googleCalendarId = googleCalendar?.calendarId,
+    status = status?.toIntOrNull(),
     attendees = attendees.map {
         AttendeeDto(
             name = it.name,
@@ -212,5 +223,6 @@ internal fun AppointmentNode.toDto() = AppointmentDtoResponse(
             contactLookupKey = it.contact?.lookupKey,
         )
     },
+    reminders = reminders.map { ReminderDto(minutes = it.minutes, method = it.method) },
     lastUpdatedAt = lastUpdatedAt,
 )

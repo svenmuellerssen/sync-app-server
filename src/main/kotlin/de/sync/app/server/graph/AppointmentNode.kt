@@ -32,6 +32,9 @@ class AppointmentNode(
     @Relationship(type = "HAS_ATTENDEE", direction = OUTGOING)
     val attendees: MutableList<AttendeeNode> = mutableListOf(),
 
+    @Relationship(type = "HAS_REMINDER", direction = OUTGOING)
+    val reminders: MutableList<ReminderNode> = mutableListOf(),
+
     @Relationship(type = "HAS_MESSAGE", direction = OUTGOING)
     val messages: MutableList<MessageNode> = mutableListOf(),
 
@@ -44,6 +47,13 @@ class AppointmentNode(
     override fun equals(other: Any?) = other is AppointmentNode && syncId == other.syncId
     override fun hashCode() = syncId.hashCode()
 }
+
+@Node("Reminder")
+class ReminderNode(
+    @Id @GeneratedValue val id: Long? = null,
+    val minutes: Int,
+    val method: Int = 1,
+)
 
 @Node("Attendee")
 class AttendeeNode(
