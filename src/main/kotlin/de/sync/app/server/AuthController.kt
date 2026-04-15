@@ -4,6 +4,7 @@ import de.sync.app.server.cache.SessionEntity
 import de.sync.app.server.cache.SessionRepository
 import de.sync.app.server.graph.AccountNode
 import de.sync.app.server.graph.AccountRepository
+import jakarta.validation.constraints.NotBlank
 import org.springframework.http.ResponseEntity
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.bind.annotation.PostMapping
@@ -21,7 +22,7 @@ class AuthController(
 ) {
 
     @PostMapping("/register")
-    fun register(@RequestBody request: LoginRequest): ResponseEntity<LoginResponse> {
+    fun register(@RequestBody @jakarta.validation.Valid request: LoginRequest): ResponseEntity<LoginResponse> {
         if (request.username.isBlank() || request.password.isBlank())
             return ResponseEntity.status(400).build()
         if (accountRepository.existsByUsername(request.username))
@@ -37,7 +38,7 @@ class AuthController(
     }
 
     @PostMapping("/login")
-    fun login(@RequestBody request: LoginRequest): ResponseEntity<LoginResponse> {
+    fun login(@RequestBody @jakarta.validation.Valid request: LoginRequest): ResponseEntity<LoginResponse> {
         if (request.username.isBlank() || request.password.isBlank())
             return ResponseEntity.status(401).build()
 
@@ -54,9 +55,6 @@ class AuthController(
         sessionRepository.deleteById(request.token)
         return ResponseEntity.ok().build()
     }
-
-    fun isTokenValid(token: String): Boolean =
-        sessionRepository.findById(token).isPresent
 
     fun getAccountNameFromToken(token: String): String? =
         sessionRepository.findById(token).orElse(null)?.accountName
@@ -79,7 +77,10 @@ class AuthController(
     }
 }
 
-data class LoginRequest(val username: String, val password: String)
+data class LoginRequest(
+    @field:NotBlank val username: String,
+    @field:NotBlank val password: String,
+)
 data class LoginResponse(val token: String, val expiresAt: Long)
 data class LogoutRequest(val token: String)
 

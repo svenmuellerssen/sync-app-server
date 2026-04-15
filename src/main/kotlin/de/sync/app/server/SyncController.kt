@@ -1,6 +1,5 @@
 package de.sync.app.server
 
-import de.sync.app.server.cache.SessionRepository
 import de.sync.app.server.dto.AppointmentManifest
 import de.sync.app.server.dto.ContactManifest
 import de.sync.app.server.dto.ManifestRequest
@@ -8,6 +7,7 @@ import de.sync.app.server.dto.ManifestResponse
 import de.sync.app.server.graph.AppointmentRepository
 import de.sync.app.server.graph.ContactRepository
 import de.sync.app.server.graph.SharedCalendarRepository
+import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.ResponseEntity
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.PostMapping
@@ -31,21 +31,23 @@ class SyncController(
     fun manifest(
         @RequestHeader("X-Sync-Token") token: String,
         @RequestBody request: ManifestRequest,
+        req: HttpServletRequest,
     ): ResponseEntity<ManifestResponse> {
+        val accountName = req.getAttribute("accountName") as String
         val emptyContacts = ContactManifest(emptyList(), emptyList(), emptyList())
         val emptyAppointments = AppointmentManifest(emptyList(), emptyList(), emptyList())
 
         val contactManifest = if (request.type == "contacts" || request.type == "all")
-            buildContactManifest(request) else emptyContacts
+            buildContactManifest(request, accountName) else emptyContacts
         val appointmentManifest = if (request.type == "appointments" || request.type == "all")
-            buildAppointmentManifest(request) else emptyAppointments
+            buildAppointmentManifest(request, accountName) else emptyAppointments
 
         return ResponseEntity.ok(ManifestResponse(contactManifest, appointmentManifest))
     }
 
-    private fun buildContactManifest(request: ManifestRequest): ContactManifest {
+    private fun buildContactManifest(request: ManifestRequest, accountName: String): ContactManifest {
         val localMap = request.contacts.associateBy { it.syncId }
-        val serverNodes = contactRepository.findAllByAccountName(request.accountName)
+        val serverNodes = contactRepository.findAllByAccountName(accountName)
         val serverMap = serverNodes.associateBy { it.syncId }
 
         val missingOnPhone = serverMap.keys - localMap.keys
@@ -59,9 +61,9 @@ class SyncController(
         return ContactManifest(toUpload = toUpload, toDownload = toDownload, toUpdate = toUpdate)
     }
 
-    private fun buildAppointmentManifest(request: ManifestRequest): AppointmentManifest {
+    private fun buildAppointmentManifest(request: ManifestRequest, accountName: String): AppointmentManifest {
         val localMap = request.appointments.associateBy { it.syncId }
-        val serverNodes = appointmentRepository.findAllByAccountName(request.accountName)
+        val serverNodes = appointmentRepository.findAllByAccountName(accountName)
         val serverMap = serverNodes.associateBy { it.syncId }
 
         // Phone is source of truth for this account's own appointments.
@@ -81,16 +83,16 @@ class SyncController(
         val toUpload = (localMap.keys - serverMap.keys).toList()
 
         // SharedCalendar events from other members: download to this phone if missing
-        val sharedCalendars = sharedCalendarRepository.findAllByMemberAccountName(request.accountName)
+        val sharedCalendars = sharedCalendarRepository.findAllByMemberAccountName(accountName)
         val sharedCalendarAppointments = sharedCalendars.flatMap { sc ->
             appointmentRepository.findAllBySharedCalendarId(sc.calendarId)
         }
         val sharedToDownload = sharedCalendarAppointments
-            .filter { it.syncId !in localMap && it.accountName != request.accountName }
+            .filter { it.syncId !in localMap && it.accountName != accountName }
             .map { it.toDto() }
         val sharedToUpdate = sharedCalendarAppointments.filter { node ->
             val local = localMap[node.syncId]
-            local != null && node.accountName != request.accountName && node.lastUpdatedAt > local.lastUpdatedAt
+            local != null && node.accountName != accountName && node.lastUpdatedAt > local.lastUpdatedAt
         }.map { it.toDto() }
 
         return AppointmentManifest(

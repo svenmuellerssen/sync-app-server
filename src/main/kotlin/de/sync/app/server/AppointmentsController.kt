@@ -1,6 +1,7 @@
 package de.sync.app.server
 
 import de.sync.app.server.graph.*
+import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.ResponseEntity
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.GetMapping
@@ -8,7 +9,6 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
-import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import java.util.UUID
 
@@ -24,8 +24,9 @@ class AppointmentsController(
     @GetMapping
     fun getAppointments(
         @RequestHeader("X-Sync-Token") token: String,
-        @RequestParam accountName: String,
+        request: HttpServletRequest,
     ): ResponseEntity<AppointmentListResponse> {
+        val accountName = request.getAttribute("accountName") as String
         val appointments = appointmentRepository.findAllByAccountName(accountName).map { it.toDto() }
         return ResponseEntity.ok(AppointmentListResponse(accountName = accountName, appointments = appointments))
     }
@@ -33,8 +34,9 @@ class AppointmentsController(
     @GetMapping("/count")
     fun getAppointmentCount(
         @RequestHeader("X-Sync-Token") token: String,
-        @RequestParam accountName: String,
+        request: HttpServletRequest,
     ): ResponseEntity<AppointmentCountResponse> {
+        val accountName = request.getAttribute("accountName") as String
         val count = appointmentRepository.countByAccountName(accountName)
         return ResponseEntity.ok(AppointmentCountResponse(accountName = accountName, count = count))
     }
@@ -43,8 +45,10 @@ class AppointmentsController(
     @PostMapping
     fun uploadAppointments(
         @RequestHeader("X-Sync-Token") token: String,
-        @RequestBody batch: AppointmentBatchRequest,
+        @RequestBody @jakarta.validation.Valid batch: AppointmentBatchRequest,
+        request: HttpServletRequest,
     ): ResponseEntity<AppointmentBackupResponse> {
+        val accountName = request.getAttribute("accountName") as String
         val now = System.currentTimeMillis()
         var stored = 0
 
@@ -54,7 +58,7 @@ class AppointmentsController(
             if (existing != null) appointmentRepository.deleteById(existing.id!!)
 
             val attendees = dto.attendees.map { a ->
-                val contact = a.email?.let { contactRepository.findByAccountNameAndEmail(batch.accountName, it) }
+                val contact = a.email?.let { contactRepository.findByAccountNameAndEmail(accountName, it) }
                     ?: a.contactLookupKey?.let { contactRepository.findByLookupKey(it) }
                 AttendeeNode(name = a.name, email = a.email, type = a.type, status = a.status, contact = contact)
             }.toMutableList()
@@ -69,19 +73,19 @@ class AppointmentsController(
             } else null
 
             val googleCal: GoogleCalendarNode? = if (dto.calendarAccountType == "com.google" && dto.calendarId != null) {
-                val cal = googleCalendarRepository.findByCalendarIdAndAccountName(dto.calendarId, batch.accountName)
+                val cal = googleCalendarRepository.findByCalendarIdAndAccountName(dto.calendarId, accountName)
                     ?: GoogleCalendarNode(
                         calendarId = dto.calendarId,
                         displayName = dto.calendarName ?: dto.calendarId,
                         calendarAccountName = dto.calendarAccountName ?: "",
                         color = dto.calendarColor,
                         accessLevel = dto.accessLevel,
-                        accountName = batch.accountName,
+                        accountName = accountName,
                     )
                 // Populate HAS_MEMBER from attendee emails
                 val emails = attendees.mapNotNull { it.email }.toSet()
                 for (email in emails) {
-                    val contact = contactRepository.findByAccountNameAndEmail(batch.accountName, email)
+                    val contact = contactRepository.findByAccountNameAndEmail(accountName, email)
                     if (contact != null && cal.members.none { it.syncId == contact.syncId }) {
                         cal.members.add(contact)
                     }
@@ -91,7 +95,7 @@ class AppointmentsController(
 
             val node = AppointmentNode(
                 syncId = dto.syncId,
-                accountName = batch.accountName,
+                accountName = accountName,
                 title = dto.title,
                 description = dto.description,
                 dtStart = dto.dtStart,

@@ -66,9 +66,8 @@ class SharedCalendarController(
     @GetMapping("/shared-calendar/list")
     fun listSharedCalendars(
         @RequestHeader("X-Sync-Token") token: String,
-        @RequestParam accountName: String,
     ): ResponseEntity<List<SharedCalendarDto>> {
-        if (!sessionRepository.findById(token).isPresent) return ResponseEntity.status(401).build()
+        val accountName = resolveAccount(token) ?: return ResponseEntity.status(401).build()
         val cals = sharedCalendarRepository.findAllByMemberAccountName(accountName)
         return ResponseEntity.ok(cals.map { it.toDto() })
     }
@@ -79,7 +78,8 @@ class SharedCalendarController(
         @PathVariable calendarId: String,
     ): ResponseEntity<InviteCodeDto> {
         val accountName = resolveAccount(token) ?: return ResponseEntity.status(401).build()
-        sharedCalendarRepository.findByCalendarId(calendarId) ?: return ResponseEntity.notFound().build()
+        val cal = sharedCalendarRepository.findByCalendarId(calendarId) ?: return ResponseEntity.notFound().build()
+        if (cal.members.none { it.username == accountName }) return ResponseEntity.status(403).build()
 
         val code = (1..7).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".random() }.joinToString("")
         sharedCalendarInviteRepository.save(
@@ -126,9 +126,8 @@ class SharedCalendarController(
     @GetMapping("/calendar/google")
     fun getGoogleCalendars(
         @RequestHeader("X-Sync-Token") token: String,
-        @RequestParam accountName: String,
     ): ResponseEntity<List<GoogleCalendarDto>> {
-        if (!sessionRepository.findById(token).isPresent) return ResponseEntity.status(401).build()
+        val accountName = resolveAccount(token) ?: return ResponseEntity.status(401).build()
         val cals = googleCalendarRepository.findAllByAccountName(accountName)
         return ResponseEntity.ok(cals.map { gc ->
             GoogleCalendarDto(

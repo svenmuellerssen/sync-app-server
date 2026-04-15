@@ -1,6 +1,7 @@
 package de.sync.app.server
 
 import de.sync.app.server.graph.*
+import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.ResponseEntity
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.GetMapping
@@ -8,7 +9,6 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
-import org.springframework.web.bind.annotation.RequestParam
 import org.springframework.web.bind.annotation.RestController
 import java.util.UUID
 
@@ -19,8 +19,9 @@ class ContactsController(private val contactRepository: ContactRepository) {
     @GetMapping
     fun getContacts(
         @RequestHeader("X-Sync-Token") token: String,
-        @RequestParam accountName: String,
+        request: HttpServletRequest,
     ): ResponseEntity<ContactListResponse> {
+        val accountName = request.getAttribute("accountName") as String
         val contacts = contactRepository.findAllByAccountName(accountName).map { it.toDto() }
         return ResponseEntity.ok(ContactListResponse(accountName = accountName, contacts = contacts))
     }
@@ -28,8 +29,9 @@ class ContactsController(private val contactRepository: ContactRepository) {
     @GetMapping("/count")
     fun getContactCount(
         @RequestHeader("X-Sync-Token") token: String,
-        @RequestParam accountName: String,
+        request: HttpServletRequest,
     ): ResponseEntity<ContactCountResponse> {
+        val accountName = request.getAttribute("accountName") as String
         val count = contactRepository.countByAccountName(accountName)
         return ResponseEntity.ok(ContactCountResponse(accountName = accountName, count = count))
     }
@@ -38,8 +40,10 @@ class ContactsController(private val contactRepository: ContactRepository) {
     @PostMapping
     fun uploadContacts(
         @RequestHeader("X-Sync-Token") token: String,
-        @RequestBody batch: ContactBatchRequest,
+        @RequestBody @jakarta.validation.Valid batch: ContactBatchRequest,
+        request: HttpServletRequest,
     ): ResponseEntity<BackupResponse> {
+        val accountName = request.getAttribute("accountName") as String
         val now = System.currentTimeMillis()
         var stored = 0
 
@@ -56,7 +60,7 @@ class ContactsController(private val contactRepository: ContactRepository) {
             val node = ContactNode(
                 syncId = dto.syncId ?: UUID.randomUUID().toString(),
                 lookupKey = dto.lookupKey,
-                accountName = batch.accountName,
+                accountName = accountName,
                 lastUpdatedAt = dto.lastUpdatedAt,
                 createdAt = existing?.createdAt ?: now,
                 displayName = dto.displayName,
