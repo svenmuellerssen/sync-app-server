@@ -11,6 +11,13 @@ data class ManifestRequest(
     val appointments: List<SyncEntry> = emptyList(),
     /** "contacts" | "appointments" | "all" — controls which manifest parts are computed */
     val type: String = "all",
+    /**
+     * Set to true by the app ONLY when CalendarReader successfully queried the device
+     * and the result is genuinely empty (not a read error or permission denial).
+     * Prevents soft-archiving all server appointments when the phone couldn't read its calendar.
+     * G1 fix.
+     */
+    val confirmedEmpty: Boolean = false,
 )
 
 /** Eine einzelne Zeile im Manifest: syncId + Timestamp des lokalen Eintrags. */

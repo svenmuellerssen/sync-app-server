@@ -9,7 +9,30 @@ import org.springframework.data.neo4j.core.schema.Relationship.Direction.OUTGOIN
 @Node("Appointment")
 class AppointmentNode(
     @Id @GeneratedValue val id: Long? = null,
+
+    // --- Version identity ---
+    /** Stable appointment identity across all versions (same UUID for all versions of an appointment). */
     val syncId: String,
+    /** Unique identity per version node — generated fresh for each new version. */
+    val versionId: String = java.util.UUID.randomUUID().toString(),
+    /** SHA-256 hash of all appointment fields. Used to detect unchanged uploads. */
+    val contentHash: String = "",
+    /**
+     * Server-side calendarId (CalendarNode.calendarId or SharedCalendarNode.calendarId).
+     * Denormalized for SlotService and history queries that don't need a calendar JOIN.
+     * Null on legacy nodes migrated before CalendarNode was introduced.
+     */
+    val calendarId: String? = null,
+    /** Server-assigned timestamp when this version node was created. Used for history ordering. */
+    val versionCreatedAt: Long = System.currentTimeMillis(),
+    /**
+     * Set when the appointment is reconciled as deleted from the phone.
+     * The node and all version history remain intact; only current-version queries filter this out.
+     * Un-archived automatically when the phone re-syncs the same syncId.
+     */
+    val deletedAt: Long? = null,
+
+    // --- Appointment data ---
     val accountName: String,
     val title: String,
     val description: String? = null,
@@ -44,8 +67,9 @@ class AppointmentNode(
     @Relationship(type = "BELONGS_TO_GOOGLE_CAL", direction = OUTGOING)
     val googleCalendar: GoogleCalendarNode? = null,
 ) {
-    override fun equals(other: Any?) = other is AppointmentNode && syncId == other.syncId
-    override fun hashCode() = syncId.hashCode()
+    // Identity is per version node, not per appointment
+    override fun equals(other: Any?) = other is AppointmentNode && versionId == other.versionId
+    override fun hashCode() = versionId.hashCode()
 }
 
 @Node("Reminder")

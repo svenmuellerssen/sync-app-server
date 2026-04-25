@@ -11,11 +11,11 @@ in den `sync-app-server` (Spring Boot / Kotlin / Neo4j + Redis).
 
 | Schritt | Status |
 |---|---|
-| `BookingNode.kt` + `BookingMessageNode.kt` | ⬜ ausstehend — siehe CODE_ANALYSIS.md #B1 |
-| `BookingRepository.kt` | ⬜ ausstehend — siehe CODE_ANALYSIS.md #B2 |
-| `BookingController.kt` | ⬜ ausstehend — siehe CODE_ANALYSIS.md #B3 |
-| `SlotService.kt` | ⬜ ausstehend — siehe CODE_ANALYSIS.md #B4 |
-| `AppointmentRepository` — `dtStartBetween`-Methode | ⬜ ausstehend — siehe CODE_ANALYSIS.md #B5 |
+| `BookingNode.kt` + `BookingMessageNode.kt` | ✅ implementiert |
+| `BookingRepository.kt` | ✅ implementiert |
+| `BookingController.kt` | ✅ implementiert |
+| `SlotService.kt` | ✅ implementiert |
+| `AppointmentRepository` — Bereichsabfragen für Slot-Suche | ✅ implementiert (`dtStartBetween` + overlap-safe Query) |
 
 ---
 
@@ -55,15 +55,15 @@ Diese Endpunkte erledigen **nicht** dieselbe Aufgabe wie Bookings. Appointments 
 automatisch synchronisierte Android-Kalendereinträge. Bookings sind manuell angelegte
 Termine mit Eingeladenen und Chat.
 
-### Neu zu implementieren
+### Implementiert (Stand jetzt)
 
 | Methode | Route | Entsprechung homeservice |
 |---|---|---|
-| `GET` | `/booking/slots/available?from=&to=&duration=` | SlotService.findFreeSlotsForRange |
-| `GET` | `/booking?accountName=` | BookingsService.findAll (gefiltert nach accountName) |
+| `GET` | `/booking/slots/available?from=&to=&duration=` | `SlotService.findAvailableSlots` |
+| `GET` | `/booking` | listet Bookings des Session-Accounts |
 | `GET` | `/booking/:id` | BookingsService.findById |
-| `POST` | `/booking` | BookingsService.create |
-| `PUT` | `/booking/:id` | BookingsService.update |
+| `POST` | `/booking` | BookingsService.create (`sharedCalendarId` erforderlich) |
+| `PUT` | `/booking/:id` | BookingsService.update (`sharedCalendarId` erforderlich) |
 | `DELETE` | `/booking/:id` | BookingsService.delete |
 | `POST` | `/booking/:id/message` | MessagesService.create |
 | `GET` | `/booking/:id/chat` | MessagesService.findByBookingId |
@@ -75,6 +75,9 @@ Termine mit Eingeladenen und Chat.
 **Hinweis zu `DELETE /booking/:id/invitees/:lookupKey`:** homeservice verwendet eine
 numerische `attendeeId` (User-ID). In der Kotlin-Version ist der Identifier der `lookup_key`
 (String) aus der `contacts`-Tabelle. Das weicht vom Original ab, ist aber unvermeidlich.
+
+**Ownership:** Alle Booking-Endpunkte lesen `accountName` aus dem von `TokenAuthInterceptor`
+gesetzten Request-Attribut. Query-/Body-Werte werden nicht fuer Ownership verwendet.
 
 ---
 
@@ -103,6 +106,9 @@ class BookingNode(
 
     @Relationship(type = "HAS_MESSAGE", direction = Relationship.Direction.OUTGOING)
     val messages: MutableList<BookingMessageNode> = mutableListOf(),
+
+    @Relationship(type = "BELONGS_TO_SHARED_CAL", direction = Relationship.Direction.OUTGOING)
+    val sharedCalendar: SharedCalendarNode? = null,
 )
 
 // graph/BookingMessageNode.kt
@@ -121,7 +127,11 @@ data class BookingMessageNode(
 (:Booking { accountName, title, startTime, endTime, ... })
     -[:HAS_INVITEE]->(:Contact { lookupKey, accountName, ... })
     -[:HAS_MESSAGE]->(:BookingMessage { senderName, text, createdAt })
+    -[:BELONGS_TO_SHARED_CAL]->(:SharedCalendar { calendarId, name, ... })
 ```
+
+**Shared-Calendar-Bindung:** `POST /booking` und `PUT /booking/:id` verlangen `sharedCalendarId`.
+Der Controller validiert, dass der aktuelle Account Mitglied des angegebenen Shared Calendars ist.
 
 **Bedingung — nur eigene Kontakte:** Beim `POST /booking/:id/invitees` wird server-seitig
 geprüft, ob der Kontakt (`ContactNode.accountName`) zum gleichen Account wie das Booking gehört.
@@ -134,14 +144,14 @@ separat gelöscht werden (kein automatisches Cascading wie bei SQL FK ON DELETE 
 
 ## 5. SlotService (Port des TS-Algorithmus)
 
-Der Algorithmus aus `slot.service.ts` wird 1:1 nach Kotlin portiert.
+Der Algorithmus aus `slot.service.ts` wurde nach Kotlin portiert.
 **Redis ist verfügbar** — der SlotService kann wie in homeservice tagesweise Buckets
 in Redis cachen (`slots:YYYY-MM-DD` → JSON-Liste von Buchungen).
 
 ```
 Eingabe: from (ISO), to (ISO), duration (Minuten), accountName
 
-1. Für jeden Tag im Bereich [from, to]:
+1. Für jeden Tag im Bereich `[from, to]`:
    a. Redis-Key prüfen: "slots:<accountName>:<YYYY-MM-DD>"
    b. Cache-Hit → direkt aus Redis lesen
    c. Cache-Miss → AppointmentRepository + BookingRepository abfragen,
@@ -158,8 +168,8 @@ Eingabe: from (ISO), to (ISO), duration (Minuten), accountName
 Ausgabe: List<TimeSlot> { start: ISO-String, end: ISO-String }
 ```
 
-**Cache-Invalidierung:** Bei `POST /booking` (create/update/delete) muss der
-betroffene Redis-Key `slots:<accountName>:<YYYY-MM-DD>` gelöscht werden,
+**Cache-Invalidierung:** Bei `POST /booking`, `PUT /booking/:id` und `DELETE /booking/:id` werden die
+betroffenen Redis-Keys `slots:<accountName>:<YYYY-MM-DD>` geloescht,
 damit die nächste Slot-Anfrage aktuelle Daten sieht.
 
 Redis-Template für Slot-Buckets: `jsonRedisTemplate` (`@Qualifier("jsonRedisTemplate")`)
@@ -172,21 +182,12 @@ homeservice liest `req.user.id` aus dem JWT → numerische User-ID.
 
 Der sync-app-server hat **kein User-Entity**. Auth läuft über Token → `sessions.account_name`.
 
-**Lösung:** Der Controller liest den Token aus dem Header `X-Sync-Token`, schlägt ihn in
-`sessions` nach, und verwendet `accountName` als Ersteller-Identifikator.
+**Implementierung:** `TokenAuthInterceptor` validiert den Header `X-Sync-Token` vorab und legt
+`accountName` als Request-Attribut ab. `BookingController` liest nur noch dieses Attribut.
 
 ```kotlin
 // Im Controller:
-@PostMapping
-fun createBooking(
-    @RequestHeader("X-Sync-Token") token: String,
-    @RequestBody dto: CreateBookingRequest,
-): ResponseEntity<BookingResponse> {
-    val accountName = sessionRepository.findById(token)
-        .orElseThrow { ResponseStatusException(HttpStatus.UNAUTHORIZED) }
-        .accountName
-    return ResponseEntity.ok(bookingService.create(accountName, dto))
-}
+val accountName = request.getAttribute("accountName") as String
 ```
 
 ---
@@ -211,13 +212,13 @@ bestimmten Gegenüber zugeordnet werden — es gibt nur einen Account.
 ### ⚠️ Problem 5 — Slot-Suche über zwei Tabellen
 
 Der Slot-Algorithmus muss **Appointments** (Android-Sync) und **Bookings** (manuell)
-kombinieren. `AppointmentEntity` hat noch kein `dtStartBetween`-Query.
+kombinieren. `AppointmentRepository` brauchte dafuer Bereichsabfragen.
 
 **Lösung:** Neue Repository-Methode hinzufügen:
 ```kotlin
 fun findAllByAccountNameAndDtStartBetween(
     accountName: String, from: Long, to: Long
-): List<AppointmentEntity>
+): List<AppointmentNode>
 ```
 
 ---
@@ -240,11 +241,11 @@ sync-app-server/src/main/kotlin/de/sync/app/server/
 ├── DataConfig.kt                  ✅ JPA + Neo4j + Redis Package-Trennung
 ├── RedisConfig.kt                 ✅ StringRedisTemplate + jsonRedisTemplate
 ├── graph/                         ✅ enthält ContactNode, AppointmentNode, AccountNode u.a.
-│   ├── BookingNode.kt             ⬜ BookingNode (@Node) + BookingMessageNode              → CODE_ANALYSIS.md #B1
-│   └── BookingRepository.kt       ⬜ Neo4jRepository<BookingNode, String>                  → CODE_ANALYSIS.md #B2
+│   ├── BookingNode.kt             ✅ BookingNode (@Node) + BookingMessageNode
+│   └── BookingRepository.kt       ✅ Neo4jRepository<BookingNode, Long>
 ├── cache/                         ✅ SessionEntity (@RedisHash) implementiert
-├── BookingController.kt           ⬜ alle /booking/... Endpunkte                            → CODE_ANALYSIS.md #B3
-└── SlotService.kt                 ⬜ Port des TS-Algorithmus (mit Redis-Cache)              → CODE_ANALYSIS.md #B4
+├── BookingController.kt           ✅ alle /booking/... Endpunkte
+└── SlotService.kt                 ✅ Slot-Suche mit Redis-Tagescache
 ```
 
 Geändert:
@@ -252,14 +253,15 @@ Geändert:
 build.gradle.kts                   ✅ spring-boot-starter-data-neo4j + spring-boot-starter-data-redis
 application.properties             ✅ spring.neo4j.* + spring.data.redis.*
 cluster-nas.bat                    ✅ sync-neo4j + sync-redis Container + NEO4J_*/REDIS_* Env-Vars
-graph/AppointmentRepository.kt      ⬜ neue Methode findAllByAccountNameAndDtStartBetween    → CODE_ANALYSIS.md #B5
+graph/AppointmentRepository.kt      ✅ neue Bereichsabfragen fuer Slot-Suche
 ```
 
 ---
 
-## 9. Offene Fragen
+## 9. Entscheidungen in der Kotlin-Implementierung
 
-1. **`GET /booking`** — gefiltert nach `accountName` aus Token, oder alle?
-2. **`senderName` bei Messages** — frei wählbar im Request-Body, oder immer aus Token (`accountName`)?
-3. **Invitees-Response** — nur `contact_id`-Array, oder vollständiges Kontaktobjekt (`contactId`, `lookupKey`, `displayName`)?
-4. **Slot-Suche** — nur Appointments + Bookings, oder auch externe Termine berücksichtigen?
+1. **`GET /booking`** ist immer auf den Session-Account beschränkt.
+2. **`senderName`** bleibt frei im Request-Body, damit das API-Format aus der Planung erhalten bleibt.
+3. **Invitees-Response** liefert Objekte mit `lookupKey`, `displayName` und `syncId`.
+4. **Slot-Suche** kombiniert Server-Bookings und die für diesen Account gespeicherten Appointments.
+5. **Booking-Erstellung** ist an ein vorhandenes Shared Calendar des Accounts gebunden (`sharedCalendarId`).

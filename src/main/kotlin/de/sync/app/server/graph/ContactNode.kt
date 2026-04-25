@@ -17,6 +17,9 @@ class ContactNode(
     val lastUpdatedAt: Long,
     val createdAt: Long,
 
+    /** Null = active. Non-null = soft-deleted (Unix ms). */
+    val deletedAt: Long? = null,
+
     val displayName: String? = null,
     val givenName: String? = null,
     val middleName: String? = null,

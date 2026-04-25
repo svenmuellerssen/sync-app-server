@@ -14,7 +14,10 @@ import java.util.UUID
 
 @RestController
 @RequestMapping("/contacts")
-class ContactsController(private val contactRepository: ContactRepository) {
+class ContactsController(
+    private val contactRepository: ContactRepository,
+    private val slotService: SlotService,
+) {
 
     @GetMapping
     fun getContacts(
@@ -22,7 +25,7 @@ class ContactsController(private val contactRepository: ContactRepository) {
         request: HttpServletRequest,
     ): ResponseEntity<ContactListResponse> {
         val accountName = request.getAttribute("accountName") as String
-        val contacts = contactRepository.findAllByAccountName(accountName).map { it.toDto() }
+        val contacts = contactRepository.findAllByAccountNameAndDeletedAtIsNull(accountName).map { it.toDto() }
         return ResponseEntity.ok(ContactListResponse(accountName = accountName, contacts = contacts))
     }
 
@@ -32,7 +35,7 @@ class ContactsController(private val contactRepository: ContactRepository) {
         request: HttpServletRequest,
     ): ResponseEntity<ContactCountResponse> {
         val accountName = request.getAttribute("accountName") as String
-        val count = contactRepository.countByAccountName(accountName)
+        val count = contactRepository.countByAccountNameAndDeletedAtIsNull(accountName)
         return ResponseEntity.ok(ContactCountResponse(accountName = accountName, count = count))
     }
 
@@ -47,22 +50,32 @@ class ContactsController(private val contactRepository: ContactRepository) {
         val now = System.currentTimeMillis()
         var stored = 0
 
-        for (dto in batch.contacts) {
-            // Upsert per syncId (preferred) or fallback to lookupKey for older app versions
-            val existing = if (dto.syncId != null) {
-                contactRepository.findBySyncId(dto.syncId)
-            } else {
-                contactRepository.findByLookupKey(dto.lookupKey)
-            }
-            if (existing != null && existing.lastUpdatedAt >= dto.lastUpdatedAt) continue
-            if (existing != null) contactRepository.deleteById(existing.id!!)
+        // Pre-load all existing contacts in two batch queries instead of one query per contact.
+        val syncIds = batch.contacts.mapNotNull { it.syncId }
+        val lookupKeys = batch.contacts.filter { it.syncId == null }.map { it.lookupKey }
 
+        val bySyncId: Map<String, ContactNode> = if (syncIds.isNotEmpty())
+            contactRepository.findAllBySyncIdIn(syncIds).associateBy { it.syncId }
+        else emptyMap()
+
+        val byLookupKey: Map<String, ContactNode> = if (lookupKeys.isNotEmpty())
+            contactRepository.findAllByAccountNameAndLookupKeyIn(accountName, lookupKeys).associateBy { it.lookupKey }
+        else emptyMap()
+
+        for (dto in batch.contacts) {
+            val existing = if (dto.syncId != null) bySyncId[dto.syncId] else byLookupKey[dto.lookupKey]
+            if (existing != null && existing.lastUpdatedAt >= dto.lastUpdatedAt) continue
+
+            // Preserve the existing Neo4j node id so SDN 6 updates the node in-place.
+            // This keeps all external edges (e.g. HAS_INVITEE from BookingNode) intact.
             val node = ContactNode(
-                syncId = dto.syncId ?: UUID.randomUUID().toString(),
+                id = existing?.id,
+                syncId = dto.syncId ?: existing?.syncId ?: UUID.randomUUID().toString(),
                 lookupKey = dto.lookupKey,
                 accountName = accountName,
                 lastUpdatedAt = dto.lastUpdatedAt,
                 createdAt = existing?.createdAt ?: now,
+                deletedAt = null,
                 displayName = dto.displayName,
                 givenName = dto.givenName,
                 middleName = dto.middleName,
@@ -95,6 +108,7 @@ class ContactsController(private val contactRepository: ContactRepository) {
         }
 
         val revision = UUID.randomUUID().toString()
+        slotService.invalidateAccount(accountName)
         return ResponseEntity.ok(BackupResponse(revision = revision, contactsStored = stored))
     }
 }

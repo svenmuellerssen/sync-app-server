@@ -24,6 +24,7 @@ class SyncController(
     private val contactRepository: ContactRepository,
     private val appointmentRepository: AppointmentRepository,
     private val sharedCalendarRepository: SharedCalendarRepository,
+    private val slotService: SlotService,
 ) {
 
     @Transactional
@@ -47,12 +48,16 @@ class SyncController(
 
     private fun buildContactManifest(request: ManifestRequest, accountName: String): ContactManifest {
         val localMap = request.contacts.associateBy { it.syncId }
-        val serverNodes = contactRepository.findAllByAccountName(accountName)
+        val serverNodes = contactRepository.findAllByAccountNameAndDeletedAtIsNull(accountName)
         val serverMap = serverNodes.associateBy { it.syncId }
 
         val missingOnPhone = serverMap.keys - localMap.keys
         val toDownload = missingOnPhone.mapNotNull { serverMap[it]?.toDto() }
-        val toUpload = (localMap.keys - serverMap.keys).toList()
+        // Include contacts missing from server + contacts where phone version is newer than server.
+        val toUpload = ((localMap.keys - serverMap.keys) + serverNodes.filter { node ->
+            val local = localMap[node.syncId]
+            local != null && local.lastUpdatedAt > node.lastUpdatedAt
+        }.map { it.syncId }).toList()
         val toUpdate = serverNodes.filter { node ->
             val local = localMap[node.syncId]
             local != null && node.lastUpdatedAt > local.lastUpdatedAt
@@ -63,30 +68,51 @@ class SyncController(
 
     private fun buildAppointmentManifest(request: ManifestRequest, accountName: String): AppointmentManifest {
         val localMap = request.appointments.associateBy { it.syncId }
-        val serverNodes = appointmentRepository.findAllByAccountName(accountName)
+
+        // Include own shared-calendar appointments so the manifest sees them as "already on server"
+        // and doesn't put them in toUpload every sync (Bug 2 fix).
+        val personalNodes = appointmentRepository.findAllCurrentByAccountName(accountName)
+        val ownSharedNodes = appointmentRepository.findAllCurrentSharedByAccountName(accountName)
+        val serverNodes = personalNodes + ownSharedNodes
         val serverMap = serverNodes.associateBy { it.syncId }
 
-        // Phone is source of truth for this account's own appointments.
-        // Delete anything on the server that the phone no longer has.
-        val missingOnPhone = serverNodes.filter { it.syncId !in localMap }
-        missingOnPhone.forEach { node -> appointmentRepository.deleteById(node.id!!) }
+        // G1 fix: only soft-archive when the phone actually confirmed a successful read.
+        // If the phone sends an empty list without confirmedEmpty=true, it could be a read
+        // error or permission denial — we must not soft-archive all server appointments.
+        val canSoftArchive = localMap.isNotEmpty() || request.confirmedEmpty
+        val now = System.currentTimeMillis()
+        if (canSoftArchive) {
+            val missingOnPhone = serverNodes.filter { it.syncId !in localMap }
+            missingOnPhone.forEach { node -> appointmentRepository.softArchiveById(node.id!!, now) }
+        }
 
-        // Deduplicate: keep oldest entry (smallest createdAt) per (title, dtStart, dtEnd, rrule)
+        // G3 fix: dedup by content-key, soft-archive losers (preserve history) instead of hard-delete.
+        // Keeps the oldest node (smallest createdAt) as the canonical version.
         val surviving = serverNodes.filter { it.syncId in localMap }
         surviving.groupBy { DedupKey(it.title, it.dtStart, it.dtEnd, it.rrule) }.forEach { (_, group) ->
             if (group.size > 1) {
                 val oldest = group.minByOrNull { it.createdAt }!!
-                group.filter { it.id != oldest.id }.forEach { appointmentRepository.deleteById(it.id!!) }
+                group.filter { it.id != oldest.id }.forEach {
+                    appointmentRepository.softArchiveById(it.id!!, now)
+                }
             }
+        }
+
+        // Invalidate slot cache if any appointments were soft-archived or deduped (G6 fix).
+        if (canSoftArchive) {
+            slotService.invalidateAccount(accountName)
         }
 
         val toUpload = (localMap.keys - serverMap.keys).toList()
 
-        // SharedCalendar events from other members: download to this phone if missing
-        val sharedCalendars = sharedCalendarRepository.findAllByMemberAccountName(accountName)
-        val sharedCalendarAppointments = sharedCalendars.flatMap { sc ->
-            appointmentRepository.findAllBySharedCalendarId(sc.calendarId)
-        }
+        // G4/G5 fix: shared calendar appointments from OTHER members — download to this phone.
+        // findAllCurrentByAccountName (used above) already returns only LOCAL cal appointments,
+        // so personal appointments never leak into sharedCalendarAppointments (G5).
+        // The accountName filter below handles G4 (own shared-cal uploads never re-downloaded).
+        val sharedCalendars = sharedCalendarRepository.findAllAccessibleByAccountName(accountName)
+        val calendarIds = sharedCalendars.map { it.calendarId }
+        val sharedCalendarAppointments = if (calendarIds.isEmpty()) emptyList()
+            else appointmentRepository.findAllCurrentBySharedCalendarIds(calendarIds)
         val sharedToDownload = sharedCalendarAppointments
             .filter { it.syncId !in localMap && it.accountName != accountName }
             .map { it.toDto() }

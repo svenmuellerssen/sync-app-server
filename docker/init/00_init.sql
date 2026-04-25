@@ -1,3 +1,0 @@
--- Initial schema placeholder.
--- Spring JPA with ddl-auto=update handles table creation automatically.
--- Add manual migrations here if needed in the future.
