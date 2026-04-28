@@ -66,10 +66,10 @@ class ContactsController(
             val existing = if (dto.syncId != null) bySyncId[dto.syncId] else byLookupKey[dto.lookupKey]
             if (existing != null && existing.lastUpdatedAt >= dto.lastUpdatedAt) continue
 
-            // Preserve the existing Neo4j node id so SDN 6 updates the node in-place.
-            // This keeps all external edges (e.g. HAS_INVITEE from BookingNode) intact.
+            // Save as a new node (no inherited id, fresh versionId) to preserve the old node as history.
             val node = ContactNode(
-                id = existing?.id,
+                id = null,
+                versionId = UUID.randomUUID().toString(),
                 syncId = dto.syncId ?: existing?.syncId ?: UUID.randomUUID().toString(),
                 lookupKey = dto.lookupKey,
                 accountName = accountName,
@@ -103,7 +103,11 @@ class ContactsController(
                 }.toMutableList(),
             )
 
-            contactRepository.save(node)
+            val savedNode = contactRepository.save(node)
+            if (existing?.id != null) {
+                contactRepository.linkVersions(savedNode.id!!, existing.id)
+                contactRepository.setDeletedAt(existing.id, now)
+            }
             stored++
         }
 

@@ -15,7 +15,7 @@ import org.springframework.stereotype.Component
  * fields would otherwise cause a full label scan.
  *
  * Indexes created:
- *   Contact:        syncId (unique), lookupKey (unique per account), accountName
+ *   Contact:        versionId (unique per version), syncId (index, shared across history), lookupKey, accountName
  *   Appointment:    syncId, accountName, calendarId
  *   CalendarNode:   calendarId (unique), accountName
  *   SharedCalendar: calendarId (unique)
@@ -30,7 +30,8 @@ class Neo4jIndexManager(private val driver: Driver) : ApplicationRunner {
     override fun run(args: ApplicationArguments) {
         val statements = listOf(
             // Contact
-            "CREATE CONSTRAINT contact_syncId_unique IF NOT EXISTS FOR (n:Contact) REQUIRE n.syncId IS UNIQUE",
+            "CREATE CONSTRAINT contact_versionId_unique IF NOT EXISTS FOR (n:Contact) REQUIRE n.versionId IS UNIQUE",
+            "CREATE INDEX contact_syncId IF NOT EXISTS FOR (n:Contact) ON (n.syncId)",
             "CREATE INDEX contact_lookupKey IF NOT EXISTS FOR (n:Contact) ON (n.lookupKey)",
             "CREATE INDEX contact_accountName IF NOT EXISTS FOR (n:Contact) ON (n.accountName)",
             // Appointment

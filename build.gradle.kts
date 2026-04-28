@@ -30,6 +30,10 @@ dependencies {
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
 	testImplementation("org.springframework.security:spring-security-test")
+	testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
+	testImplementation("org.testcontainers:junit-jupiter:1.21.3")
+	testImplementation("org.testcontainers:neo4j:1.21.3")
+	testImplementation("org.testcontainers:testcontainers:1.21.3")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
@@ -41,4 +45,11 @@ kotlin {
 
 tasks.withType<Test> {
 	useJUnitPlatform()
+	// neo4j-harness brings its own SLF4J provider — force Logback so Spring Boot doesn't fail
+	systemProperty("slf4j.provider", "ch.qos.logback.classic.spi.LogbackServiceProvider")
+	// Docker Desktop 29+ on Windows: \\.\pipe\docker_engine_linux is the real WSL2 engine pipe.
+	// docker-java reads System.getProperty("api.version") before DOCKER_API_VERSION env var.
+	// Minimum required API version for Docker 29 is 1.40.
+	environment("DOCKER_HOST", "npipe:////./pipe/docker_engine_linux")
+	systemProperty("api.version", "1.41")
 }

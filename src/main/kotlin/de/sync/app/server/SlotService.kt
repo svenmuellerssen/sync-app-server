@@ -29,9 +29,26 @@ class SlotService(
     fun findAvailableSlots(accountName: String, fromIso: String, toIso: String, durationMinutes: Long): List<TimeSlot> {
         require(durationMinutes in 1L..480) { "duration must be between 1 and 480 minutes (8h)" }
 
-        val from = parseIso(fromIso)
-        val to = parseIso(toIso)
-        require(to > from) { "to must be later than from" }
+        val originalFrom = parseIso(fromIso)
+        val originalTo   = parseIso(toIso)
+        require(originalTo > originalFrom) { "to must be later than from" }
+
+        // If the entire range lies in the past, shift it forward so that from = now,
+        // preserving the original duration. This avoids returning stale slot windows
+        // when a client sends an outdated or test range.
+        val now = System.currentTimeMillis()
+        val (from, to) = when {
+            originalTo <= now -> {
+                // Gesamte Range in der Vergangenheit → auf jetzt verschieben, Dauer erhalten
+                val rangeMs = originalTo - originalFrom
+                Pair<Long, Long>(now, now + rangeMs)
+            }
+            originalFrom < now -> {
+                // Start in der Vergangenheit, Ende in der Zukunft → Start auf jetzt klemmen
+                Pair<Long, Long>(now, originalTo)
+            }
+            else -> Pair<Long, Long>(originalFrom, originalTo)
+        }
 
         val busyIntervals = collectBusyIntervals(accountName, from, to)
         val durationMs = TimeUnit.MINUTES.toMillis(durationMinutes)
@@ -65,7 +82,7 @@ class SlotService(
     fun invalidateAccount(accountName: String) {
         val pattern = "slots:$accountName:*"
         val keysToDelete = mutableListOf<ByteArray>()
-        jsonRedisTemplate.execute { connection ->
+        jsonRedisTemplate.execute<Void?> { connection ->
             val scanOptions = ScanOptions.scanOptions().match(pattern).count(100).build()
             connection.scan(scanOptions).use { cursor ->
                 while (cursor.hasNext()) keysToDelete.add(cursor.next())
@@ -73,7 +90,7 @@ class SlotService(
             null
         }
         if (keysToDelete.isNotEmpty()) {
-            jsonRedisTemplate.execute { connection ->
+            jsonRedisTemplate.execute<Void?> { connection ->
                 connection.del(*keysToDelete.toTypedArray())
                 null
             }

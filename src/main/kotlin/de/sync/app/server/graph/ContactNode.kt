@@ -10,7 +10,9 @@ import org.springframework.data.neo4j.core.schema.Relationship.Direction.OUTGOIN
 class ContactNode(
     @Id @GeneratedValue val id: Long? = null,
 
-    val syncId: String,         // UUID — von App generiert, stabiler Upsert-Schlüssel
+    /** Unique identifier per version — new UUID for each save, constraint enforced by Neo4jIndexManager. */
+    val versionId: String = java.util.UUID.randomUUID().toString(),
+    val syncId: String,         // UUID — von App generiert, stabiler Upsert-Schlüssel; shared across all versions
     val lookupKey: String,      // Android LOOKUP_KEY — bleibt für interne Referenzierung
     val accountName: String,
 
@@ -45,6 +47,9 @@ class ContactNode(
 
     @Relationship(type = "HAS_IM", direction = OUTGOING)
     val instantMessengers: MutableList<InstantMessengerNode> = mutableListOf(),
+
+    @Relationship(type = "PREVIOUS_VERSION", direction = OUTGOING)
+    val previousVersion: ContactNode? = null,
 ) {
     override fun equals(other: Any?) = other is ContactNode && syncId == other.syncId
     override fun hashCode() = syncId.hashCode()
