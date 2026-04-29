@@ -9,6 +9,6 @@ class WebMvcConfig(private val tokenAuthInterceptor: TokenAuthInterceptor) : Web
     override fun addInterceptors(registry: InterceptorRegistry) {
         registry.addInterceptor(tokenAuthInterceptor)
             .addPathPatterns("/**")
-            .excludePathPatterns("/auth/**")
+            .excludePathPatterns("/auth/login", "/auth/register")
     }
 }

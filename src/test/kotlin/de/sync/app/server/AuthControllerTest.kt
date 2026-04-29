@@ -64,8 +64,7 @@ class AuthControllerTest : EndpointTestSupport() {
     fun `logout returns 200`() {
         mockMvc.perform(
             post("/auth/logout")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content("""{"token":"$TEST_TOKEN"}""")
+                .header("X-Sync-Token", TEST_TOKEN)
         )
             .andExpect(status().isOk)
     }

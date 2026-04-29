@@ -102,8 +102,10 @@ class AppointmentService(
         } else null
 
         // Resolve SharedCalendar (owner or member check)
+        // Must use derived query (findByCalendarIdAndDeletedAtIsNull) — it loads owner + members via SDN6 automatic
+        // relationship loading. The custom @Query findByCalendarId() returns only node properties, not relationships.
         val sharedCal: SharedCalendarNode? = dto.sharedCalendarId?.let { scId ->
-            val cal = sharedCalendarRepository.findByCalendarId(scId)
+            val cal = sharedCalendarRepository.findByCalendarIdAndDeletedAtIsNull(scId)
                 ?: throw IllegalArgumentException("SharedCalendar not found: $scId")
             val isOwner = cal.owner?.username == accountName
             val isMember = cal.members.any { it.username == accountName }

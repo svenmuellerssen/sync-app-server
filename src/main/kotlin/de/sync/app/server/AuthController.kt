@@ -5,10 +5,12 @@ import de.sync.app.server.cache.SessionRepository
 import de.sync.app.server.graph.AccountNode
 import de.sync.app.server.graph.AccountRepository
 import jakarta.validation.constraints.NotBlank
+import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.ResponseEntity
 import org.springframework.security.crypto.password.PasswordEncoder
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
+import org.springframework.web.bind.annotation.RequestHeader
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
 import java.util.UUID
@@ -51,8 +53,14 @@ class AuthController(
     }
 
     @PostMapping("/logout")
-    fun logout(@RequestBody request: LogoutRequest): ResponseEntity<Void> {
-        sessionRepository.deleteById(request.token)
+    fun logout(
+        @RequestHeader("X-Sync-Token") token: String,
+        request: HttpServletRequest,
+    ): ResponseEntity<Void> {
+        // Token is already validated by TokenAuthInterceptor.
+        // Deleting only the session matching this token ensures a user
+        // can only invalidate their own session.
+        sessionRepository.deleteById(token)
         return ResponseEntity.ok().build()
     }
 
@@ -82,5 +90,4 @@ data class LoginRequest(
     @field:NotBlank val password: String,
 )
 data class LoginResponse(val token: String, val expiresAt: Long)
-data class LogoutRequest(val token: String)
 

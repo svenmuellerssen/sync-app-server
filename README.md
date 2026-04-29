@@ -20,13 +20,13 @@ Spring Boot Backend für die Sync App. Nimmt Kontakt- und Termin-Backups vom And
 
 ## Endpunkte
 
-Alle Endpunkte außer `/auth/*` erfordern den Header `X-Sync-Token: <token>`. Der Account wird **ausschließlich aus dem Token** aufgelöst — `accountName` in Query-Parametern oder Request-Bodies wird ignoriert (⚠ siehe Bekannte Probleme).
+Alle Endpunkte außer `/auth/login` und `/auth/register` erfordern den Header `X-Sync-Token: <token>`. Der Account wird **ausschließlich aus dem Token** aufgelöst — `accountName` in Query-Parametern oder Request-Bodies wird ignoriert (⚠ siehe Bekannte Probleme).
 
 | Methode | Pfad | Beschreibung |
 |---|---|---|
 | `POST` | `/auth/register` | Neuen Account registrieren: `{ username, password }` → `{ token, expiresAt }` |
 | `POST` | `/auth/login` | Login: `{ username, password }` → `{ token, expiresAt }` |
-| `POST` | `/auth/logout` | Session beenden: `{ token }` |
+| `POST` | `/auth/logout` | Session beenden: Header `X-Sync-Token: <token>` — nur der Token-Inhaber kann seine eigene Session invalidieren |
 | `POST` | `/sync/manifest` | Bidirektionaler Sync-Vergleich → `{ contacts: {…}, appointments: {…} }` |
 | `POST` | `/contacts` | Kontakt-Batch hochladen → `{ revision, contactsStored }` |
 | `GET` | `/contacts` | Alle gespeicherten Kontakte → `{ accountName, contacts: […] }` |
@@ -64,7 +64,7 @@ Alle Endpunkte außer `/auth/*` erfordern den Header `X-Sync-Token: <token>`. De
 - Accounts werden in Neo4j als `(:Account {username, passwordHash, createdAt})` gespeichert
 - Passwörter werden mit **BCrypt** gehasht
 - Sessions werden in **Redis** gespeichert (`@RedisHash("session")`, TTL 24h) — überleben Server-Neustarts, laufen automatisch ab
-- `TokenAuthInterceptor` validiert `X-Sync-Token` global für alle Nicht-Auth-Endpunkte und setzt `accountName` als Request-Attribut (kein zweiter Redis-Lookup in den Controllern)
+- `TokenAuthInterceptor` validiert `X-Sync-Token` global für alle Endpunkte außer `/auth/login` und `/auth/register` und setzt `accountName` als Request-Attribut (kein zweiter Redis-Lookup in den Controllern)
 
 ---
 
@@ -301,8 +301,8 @@ Bestehende geteilte Google-Kalender werden getracked:
 | `SharedCalendarController.kt` | Shared Calendars (OWNS_CALENDAR/MEMBER_OF), Invite-Codes, Google-Kalender-Metadaten, `GET /calendar` |
 | `SyncController.kt` | `POST /sync/manifest` — bidirektionaler Delta-Abgleich (G1-G5 gefixed) |
 | `SlotService.kt` | Freie Slots aus Appointments + Bookings, 5-Min-Puffer, 15-Min-Raster, Redis-Tagescache |
-| `TokenAuthInterceptor.kt` | Validiert `X-Sync-Token` global (außer `/auth/*`), setzt `accountName` als Request-Attribut |
-| `GlobalExceptionHandler.kt` | `@RestControllerAdvice` — strukturierte Fehler-Responses (`VALIDATION_ERROR`, `BAD_REQUEST`, `INTERNAL_ERROR`) ohne Stack-Trace-Leak |
+| `TokenAuthInterceptor.kt` | Validiert `X-Sync-Token` global (außer `/auth/login` und `/auth/register`), setzt `accountName` als Request-Attribut |
+| `GlobalExceptionHandler.kt` | `@RestControllerAdvice` — strukturierte Fehler-Responses (`VALIDATION_ERROR`, `BAD_REQUEST`, `INTERNAL_ERROR`) ohne Stack-Trace-Leak; behandelt auch `HttpMessageNotReadableException` (fehlende/fehlerhafte JSON-Felder → 400) |
 | `DataMigrationService.kt` | `CommandLineRunner` — 7 idempotente Startup-Migrationen (Versioning-Felder, CalendarNode+HAS_APPOINTMENT, OWNS_CALENDAR/MEMBER_OF) |
 | `DataConfig.kt` | Explizites Repository-Scanning — trennt Neo4j (`graph/`) und Redis (`cache/`) Repositories |
 | `RedisConfig.kt` | `jsonRedisTemplate` (Jackson) + `StringRedisTemplate` |
