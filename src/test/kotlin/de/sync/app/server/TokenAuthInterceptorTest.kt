@@ -80,4 +80,25 @@ class TokenAuthInterceptorTest {
 
         assertThat(request.getAttribute("accountName")).isEqualTo("alice")
     }
+
+    // TI5: Token existiert noch in Redis, aber Session ist rechnerisch abgelaufen
+    //      (createdAt + ttlSeconds * 1000 < jetzt) → soll 401 zurückgeben.
+    //      Derzeit: kein expiresAt-Check → gibt 200 zurück (RED).
+    @Test
+    fun `session expired by createdAt plus ttl is rejected with 401`() {
+        val request = MockHttpServletRequest()
+        request.addHeader("X-Sync-Token", "stale-token")
+        val expiredSession = SessionEntity(
+            token = "stale-token",
+            accountName = "alice",
+            ttlSeconds = 86400,
+            createdAt = System.currentTimeMillis() - (86400L * 1000 + 10_000), // 24h+10s zurück
+        )
+        given(sessionRepository.findById("stale-token")).willReturn(Optional.of(expiredSession))
+
+        val result = interceptor.preHandle(request, response, Any())
+
+        assertThat(result).isFalse()
+        assertThat(response.status).isEqualTo(401)
+    }
 }

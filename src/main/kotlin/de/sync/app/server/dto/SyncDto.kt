@@ -40,6 +40,8 @@ data class ContactManifest(
     val toDownload: List<ContactDtoResponse>,
     /** Kontakte, bei denen der Server neuer ist → Telefon soll updaten */
     val toUpdate: List<ContactDtoResponse>,
+    /** syncIds, die das Telefon lokal löschen soll (auf dem Server explizit gelöscht) */
+    val toDeleteLocally: List<String> = emptyList(),
 )
 
 data class AppointmentManifest(
@@ -49,4 +51,6 @@ data class AppointmentManifest(
     val toDownload: List<AppointmentDtoResponse>,
     /** LOCAL-Kalender-Termine, bei denen der Server neuer ist */
     val toUpdate: List<AppointmentDtoResponse>,
+    /** syncIds, die das Telefon lokal löschen soll (auf dem Server explizit gelöscht) */
+    val toDeleteLocally: List<String> = emptyList(),
 )

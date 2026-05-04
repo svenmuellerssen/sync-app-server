@@ -2,11 +2,13 @@ package de.sync.app.server
 
 import org.slf4j.LoggerFactory
 import org.springframework.http.HttpStatus
+import org.springframework.http.HttpStatusCode
 import org.springframework.http.ResponseEntity
 import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
 import org.springframework.web.bind.annotation.RestControllerAdvice
+import org.springframework.web.server.ResponseStatusException
 
 data class ErrorResponse(val error: String, val message: String)
 
@@ -29,6 +31,12 @@ class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException::class)
     fun handleIllegalArgument(ex: IllegalArgumentException): ResponseEntity<ErrorResponse> {
         return ResponseEntity.badRequest().body(ErrorResponse("BAD_REQUEST", ex.message ?: "Invalid input"))
+    }
+
+    @ExceptionHandler(ResponseStatusException::class)
+    fun handleResponseStatus(ex: ResponseStatusException): ResponseEntity<ErrorResponse> {
+        val reason = ex.reason ?: HttpStatusCode.valueOf(ex.statusCode.value()).toString()
+        return ResponseEntity.status(ex.statusCode).body(ErrorResponse(ex.statusCode.value().toString(), reason))
     }
 
     @ExceptionHandler(Exception::class)

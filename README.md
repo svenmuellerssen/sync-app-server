@@ -380,7 +380,7 @@ Bestehende geteilte Google-Kalender werden getracked:
 - [ ] `AppointmentService`: Google-Calendar-Member-Sync invalidiert Slot-Cache neu hinzugekommener Members nicht — deferred (ContactNode ≠ AccountNode, kein direkter Link; Aufwand übersteigt Nutzen für Single-User-Server)
 
 **Sync-Logik**
-- [x] Rekonsiliation: `AppointmentService.processBatch` ruft am Ende `archiveOrphanedPersonalAppointments` auf — setzt `deletedAt` auf den `AppointmentNode` für alle PersonalTermine, deren `syncId` nicht im aktuellen Batch enthalten ist. `HAS_APPOINTMENT`-Kante und gesamte Versionshistorie bleiben erhalten (traversierbar von `CalendarNode`). Wird der gleiche `syncId` später erneut synchronisiert, wird der Termin automatisch un-archiviert. (SharedCalendar-Termine ausgenommen)
+- [x] ~~Rekonsiliation: `AppointmentService.processBatch` ruft am Ende `archiveOrphanedPersonalAppointments` auf~~ — **entfernt (BUG-A)**. Archivierung bei Manifest-basiertem Sync obliegt ausschließlich `SyncController.buildAppointmentManifest`.
 - [x] `AppointmentService.resolveOrCreateCalendarNode`: Race-Condition bei gleichzeitigem ersten Sync zweier Phones — fix via Neo4j `MERGE` auf (name, accountName, calendarType) statt find-then-create; `ON MATCH SET deletedAt = null` reaktiviert ggf. soft-gelöschte Kalender gleichen Namens
 - [x] `buildContactManifest`: bereits korrekt implementiert — `local.lastUpdatedAt > node.lastUpdatedAt`-Zweig in `toUpload` vorhanden
 
@@ -442,6 +442,109 @@ $env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-21.0.10.7-hotspot"
 ```
 
 JAR liegt unter: `build/libs/sync-app-server-0.0.1-SNAPSHOT.jar`
+
+---
+
+## Tests
+
+Alle Tests liegen unter `src/test/kotlin/de/sync/app/server/`.  
+Vollständiges Test-Katalog und Bug-Tracking: `sync-app-server/todo-tests.md`
+
+**Ausführen:**
+
+```powershell
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-21.0.10.7-hotspot"
+.\gradlew.bat test
+```
+
+> Testcontainers startet automatisch Neo4j 5 und Redis 7 — Docker muss laufen.
+
+---
+
+### Teststrategie
+
+| Typ | Werkzeug | Einsatz |
+|---|---|---|
+| **Integrationstest** (`@SpringBootTest`) | Testcontainers (Neo4j 5 + Redis 7) | Service-Logik, Repository-Queries, Controller-Routing mit echter DB |
+| **Controller-Test** (`@WebMvcTest`) | MockMvc + Mockito | HTTP-Routing, Validierung, Fehler-Status-Codes — Repositories gemockt |
+| **Unit-Test** | JUnit 5 + Mockito | Pure Berechnungen ohne Spring-Kontext (Slot-Algorithmus, Hash) |
+
+**Faustregel:** Integrationstest ist der Default. Controller-Test nur für die HTTP-Schicht. Unit-Test nur für reine Funktionen.
+
+---
+
+### Testdateien und Abdeckung
+
+| Datei | Typ | Abgedeckte Bereiche |
+|---|---|---|
+| `AppointmentServiceIntegrationTest.kt` | Integration | AS1–AS15: Stale-Schutz, Hash-Dedup, Versionierung, SharedCal, CalendarNode-Bootstrap, Soft-Archivierung, Delta-Upload (BUG-1 red) |
+| `SyncControllerIntegrationTest.kt` | Integration | SC1–SC9: Manifest-Logik, `confirmedEmpty`-Guard, SharedCal-Termine, Kontakt-Sync, Cache-Invalidierung |
+| `BookingControllerTest.kt` | Controller + Integration | BC-v1–BC-v7 (Validierung), BCi1–BCi5 (Overlap-Guard, Member-Access, Invitees, SharedCal-Delete) |
+| `ContactsControllerTest.kt` | Integration | CC1–CC7: Upsert, Stale-Skip, History-Chain, Account-Isolation (BUG-2 red) |
+| `SharedCalendarControllerTest.kt` | Controller + Integration | SCS-v1–SCS-v4 (Auth/Ownership), SCSi1–SCSi5 (Invite-Code, Leave, Delete, Cache) |
+| `AuthIntegrationTest.kt` | Integration | Auth1–Auth5: Login, Register, Logout, Token-Ablauf |
+| `AppointmentsControllerTest.kt` | Controller | AC1–AC3: Token-Validierung, History-Isolation, Count-Endpoint |
+| `SlotServiceTest.kt` | Unit | SlotS1–SlotS4: Booking-Block, 5-Min-Padding, ungültige Duration (BUG-5 ✅), Tagesgrenzen |
+| `HashAppointmentTest.kt` | Unit | SHA-256-Hash — Vollständigkeit und Determinismus |
+| `TokenAuthInterceptorTest.kt` | Unit | Token-Validierung, fehlender Header, abgelaufene Session |
+
+---
+
+### Bekannte Bugs — Teststatus
+
+Bugs mit Status **„Test schlägt fehl"** sind absichtlich rote Tests — sie dienen als Regressionsschutz sobald der Bug gefixt wird.
+
+| ID | Bug | Schwere | Teststatus |
+|---|---|---|---|
+| ~~BUG-A~~ | ~~`archiveOrphanedPersonalAppointments` in `processBatch` erhält nur Upload-Delta → archiviert alle vorhandenen Termine~~ | 🔴 Kritisch | **AS11, AS14** ✅ gefixt |
+| ~~BUG-B~~ | ~~`findCurrentOrArchivedBySyncId` ohne LIMIT → `IncorrectResultSizeDataAccessException` bei Duplikaten → `UnexpectedRollbackException` → Sync bricht nach ~900 Terminen ab~~ | 🔴 Kritisch | **AS16** ✅ gefixt |
+| BUG-1 | `archiveOrphanedPersonalAppointments` in `processBatch` erhält nur Upload-Delta → archiviert alle vorhandenen Termine | 🔴 Kritisch | **AS14** ✅ gefixt (= BUG-A) |
+| BUG-2 | `findByLookupKey()` ohne `accountName`-Filter → gibt Kontakt aus beliebigem Account zurück | 🔴 Hoch | **CC4** — Test schlägt fehl bis Bug gefixt |
+| BUG-3 | Invite-Code kann mehrfach genutzt werden (nicht-atomares Join) | 🟠 Mittel | **SCSi1/SCSi2** — sequenziell nachgewiesen |
+| BUG-4 | `removeHasAppointmentEdge()` läuft vor `save()` — Termin orphaned bei Save-Fehler | 🟠 Mittel | kein Test (nicht reproduzierbar ohne erzwungenen Fehler) |
+| BUG-5 | `SlotService`: ungültige Duration-Strings wurden silently auf 15 min zurückgerechnet | 🟡 Niedrig | **SlotS3** ✅ gefixt + grüner Test |
+| BUG-6 | `DedupKey` in `SyncController` dedupliziert wiederkehrende Termin-Instanzen falsch | 🟡 Niedrig | kein Test (Edge-Case mit komplexen Seriendaten) |
+| BUG-7 | Race Condition bei `register()` ohne Unique-Constraint auf `Account.username` | 🟠 Mittel | kein Test (Race nicht deterministisch testbar) |
+
+---
+
+### Test-Setup (Vorlage für Integrationstests)
+
+```kotlin
+@SpringBootTest
+@Testcontainers
+class MyIntegrationTest {
+
+    @Autowired lateinit var driver: Driver
+    @Autowired lateinit var stringRedisTemplate: StringRedisTemplate
+
+    @BeforeEach
+    fun setup() {
+        driver.session().use { it.run("MATCH (n) DETACH DELETE n") }
+        stringRedisTemplate.keys("slots:*").takeIf { it?.isNotEmpty() == true }
+            ?.let { stringRedisTemplate.delete(it) }
+    }
+
+    companion object {
+        @Container @JvmStatic
+        val neo4j: Neo4jContainer<*> = Neo4jContainer("neo4j:5").withoutAuthentication()
+
+        @Container @JvmStatic
+        val redis: GenericContainer<*> = GenericContainer("redis:7-alpine").withExposedPorts(6379)
+
+        @JvmStatic @DynamicPropertySource
+        fun properties(registry: DynamicPropertyRegistry) {
+            registry.add("spring.neo4j.uri") { neo4j.boltUrl }
+            registry.add("spring.data.redis.host") { redis.host }
+            registry.add("spring.data.redis.port") { redis.getMappedPort(6379).toString() }
+        }
+    }
+}
+```
+
+- **Controller-Tests:** `@WebMvcTest` + `@AutoConfigureMockMvc(addFilters = false)` + Mockito für Repositories
+- **Token simulieren:** `request.setAttribute("accountName", ...)` via `EndpointTestSupport.authenticated()`
+- **Lenient-Mocks:** `@MockitoSettings(strictness = Strictness.LENIENT)` nötig wenn `@BeforeEach`-Stubs in einzelnen Tests überschrieben werden
 
 ---
 

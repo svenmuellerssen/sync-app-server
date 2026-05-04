@@ -62,14 +62,20 @@ class AppointmentService(
             }
         }
 
-        // Reconciliation: archive personal appointments that no longer exist on the phone.
-        // Any current appointment (reachable via CalendarNode-[:HAS_APPOINTMENT]) whose syncId
-        // is absent from this batch is treated as deleted on the device and soft-archived.
-        // SharedCalendar appointments are excluded — they are managed by the calendar owner.
-        val knownSyncIds = dtos.map { it.syncId }
-        appointmentRepository.archiveOrphanedPersonalAppointments(accountName, knownSyncIds, now)
-
         return BatchResult(stored = stored, skipped = skipped, newCalendars = newCalendars.values.toList())
+    }
+
+    /**
+     * Explicitly deletes an appointment by setting deletedAt (tombstone).
+     * Returns true if found and archived, false if not found (→ 404).
+     * The HAS_APPOINTMENT edge is kept so the tombstone is detectable by the sync manifest.
+     */
+    @Transactional
+    fun deleteByExplicit(syncId: String, accountName: String): Boolean {
+        val node = appointmentRepository.findCurrentBySyncId(accountName, syncId) ?: return false
+        appointmentRepository.softArchiveById(node.id!!, System.currentTimeMillis())
+        slotService.invalidateAccount(accountName)
+        return true
     }
 
     private fun processSingle(
@@ -78,7 +84,7 @@ class AppointmentService(
         now: Long,
         newCalendarsOut: MutableMap<String, CalendarNode>,
     ): SaveStatus {
-        val existing = appointmentRepository.findCurrentOrArchivedBySyncId(dto.syncId)
+        val existing = appointmentRepository.findCurrentOrArchivedBySyncId(accountName, dto.syncId)
 
         // Stale-overwrite protection: never regress to an older version
         if (existing != null && dto.lastUpdatedAt < existing.lastUpdatedAt) {
@@ -119,7 +125,7 @@ class AppointmentService(
         // Build attendees
         val attendees = dto.attendees.map { a ->
             val contact = a.email?.let { contactRepository.findByAccountNameAndEmail(accountName, it) }
-                ?: a.contactLookupKey?.let { contactRepository.findByLookupKey(it) }
+                ?: a.contactLookupKey?.let { contactRepository.findByLookupKeyAndAccountName(it, accountName) }
             AttendeeNode(name = a.name, email = a.email, type = a.type, status = a.status, contact = contact)
         }.toMutableList()
 

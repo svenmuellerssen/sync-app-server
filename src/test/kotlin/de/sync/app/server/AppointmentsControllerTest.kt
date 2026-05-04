@@ -86,4 +86,34 @@ class AppointmentsControllerTest : EndpointTestSupport() {
         )
             .andExpect(status().isOk)
     }
+
+    // -------------------------------------------------------------------------
+    // AD-1: DELETE /appointments/{syncId} → 204 wenn gefunden
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `AD-1 delete existing appointment returns 204`() {
+        Mockito.`when`(appointmentService.deleteByExplicit("sync-abc", TEST_ACCOUNT))
+            .thenReturn(true)
+
+        mockMvc.perform(
+            authenticated(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/appointments/sync-abc"))
+        )
+            .andExpect(status().isNoContent)
+    }
+
+    // -------------------------------------------------------------------------
+    // AD-2: DELETE /appointments/{syncId} → 404 wenn nicht gefunden
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `AD-2 delete non-existent appointment returns 404`() {
+        Mockito.`when`(appointmentService.deleteByExplicit("sync-abc", TEST_ACCOUNT))
+            .thenReturn(false)
+
+        mockMvc.perform(
+            authenticated(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/appointments/sync-abc"))
+        )
+            .andExpect(status().isNotFound)
+    }
 }

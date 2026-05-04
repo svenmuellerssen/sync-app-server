@@ -1,6 +1,7 @@
 package de.sync.app.server
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import de.sync.app.server.cache.SessionEntity
 import de.sync.app.server.cache.SessionRepository
 import de.sync.app.server.graph.AccountRepository
 import org.assertj.core.api.Assertions.assertThat
@@ -217,6 +218,32 @@ class AuthIntegrationTest {
             get("/contacts/count").header("X-Sync-Token", "not-a-real-token")
         )
             .andExpect(status().isUnauthorized)
+    }
+
+    // -------------------------------------------------------------------------
+    // Auth5: Redis TTL expiry — expired token returns 401
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `Auth5 session token expired via Redis TTL is rejected with 401`() {
+        // Save a session with a 1-second TTL — Redis will evict it automatically.
+        sessionRepository.save(
+            SessionEntity(token = "expiring-token", accountName = "ttl-user", ttlSeconds = 1L)
+        )
+
+        // Token is valid immediately after save
+        mockMvc.perform(get("/contacts/count").header("X-Sync-Token", "expiring-token"))
+            .andExpect(status().isOk)
+
+        // Wait for Redis TTL to expire
+        Thread.sleep(1_100)
+
+        // Token is now gone from Redis → 401
+        mockMvc.perform(get("/contacts/count").header("X-Sync-Token", "expiring-token"))
+            .andExpect(status().isUnauthorized)
+
+        // Verify the session is truly absent from Redis
+        assertThat(sessionRepository.findById("expiring-token")).isEmpty
     }
 
     // -------------------------------------------------------------------------

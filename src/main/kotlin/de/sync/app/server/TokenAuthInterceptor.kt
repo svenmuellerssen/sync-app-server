@@ -21,6 +21,11 @@ class TokenAuthInterceptor(private val sessionRepository: SessionRepository) : H
             res.status = HttpServletResponse.SC_UNAUTHORIZED
             return false
         }
+        val expiresAt = session.createdAt + session.ttlSeconds * 1000
+        if (expiresAt < System.currentTimeMillis()) {
+            res.status = HttpServletResponse.SC_UNAUTHORIZED
+            return false
+        }
         req.setAttribute("accountName", session.accountName)
         return true
     }

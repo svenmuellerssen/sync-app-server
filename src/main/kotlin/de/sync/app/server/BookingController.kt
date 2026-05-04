@@ -355,11 +355,8 @@ class BookingController(
     }
 
     private fun requireSharedCalendar(calendarId: String, accountName: String): SharedCalendarNode {
-        val sharedCalendar = sharedCalendarRepository.findByCalendarId(calendarId)
+        val sharedCalendar = sharedCalendarRepository.findByCalendarIdAndDeletedAtIsNull(calendarId)
             ?: throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Shared calendar not found")
-        if (sharedCalendar.deletedAt != null) {
-            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Shared calendar not found")
-        }
         if (sharedCalendar.members.none { it.username == accountName } && sharedCalendar.owner?.username != accountName) {
             throw ResponseStatusException(HttpStatus.FORBIDDEN, "Shared calendar is not accessible")
         }

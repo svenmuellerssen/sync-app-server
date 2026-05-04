@@ -76,4 +76,45 @@ class ContactsControllerTest : EndpointTestSupport() {
         )
             .andExpect(status().isOk)
     }
+
+    // -------------------------------------------------------------------------
+    // CD-1: DELETE /contacts/{lookupKey} → 204 wenn gefunden
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `CD-1 delete existing contact returns 204`() {
+        val contact = de.sync.app.server.graph.ContactNode(
+            id = 1L,
+            syncId = "sync-abc",
+            lookupKey = "lk-abc",
+            accountName = TEST_ACCOUNT,
+            lastUpdatedAt = 100L,
+            createdAt = 100L,
+            displayName = "Alice",
+        )
+        Mockito.`when`(contactRepository.findAllByAccountNameAndLookupKeyIn(TEST_ACCOUNT, listOf("lk-abc")))
+            .thenReturn(listOf(contact))
+
+        mockMvc.perform(
+            authenticated(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/contacts/lk-abc"))
+        )
+            .andExpect(status().isNoContent)
+
+        Mockito.verify(contactRepository).setDeletedAt(Mockito.eq(1L), Mockito.anyLong())
+    }
+
+    // -------------------------------------------------------------------------
+    // CD-2: DELETE /contacts/{lookupKey} → 404 wenn nicht gefunden
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `CD-2 delete non-existent contact returns 404`() {
+        Mockito.`when`(contactRepository.findAllByAccountNameAndLookupKeyIn(TEST_ACCOUNT, listOf("lk-abc")))
+            .thenReturn(emptyList())
+
+        mockMvc.perform(
+            authenticated(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/contacts/lk-abc"))
+        )
+            .andExpect(status().isNotFound)
+    }
 }

@@ -35,18 +35,34 @@ interface AppointmentRepository : Neo4jRepository<AppointmentNode, Long> {
     fun findAllCurrentSharedByAccountName(accountName: String): List<AppointmentNode>
 
     /**
-     * Returns the current (active, not soft-archived) version of an appointment.
+     * Returns the current (active, not soft-archived) version of an appointment, scoped to an account.
      * Use [findCurrentOrArchivedBySyncId] in processSingle to also find archived nodes for un-delete.
+     *
+     * LIMIT 1 prevents IncorrectResultSizeDataAccessException when corrupted state produces multiple
+     * HAS_APPOINTMENT edges for the same syncId (e.g. from migration artifacts or BUG-1 cycles).
      */
-    @Query("MATCH ()-[:HAS_APPOINTMENT]->(a:Appointment {syncId: \$syncId}) WHERE a.deletedAt IS NULL RETURN a")
-    fun findCurrentBySyncId(syncId: String): AppointmentNode?
+    @Query("""
+        MATCH ()-[:HAS_APPOINTMENT]->(a:Appointment {syncId: ${'$'}syncId})
+        WHERE a.accountName = ${'$'}accountName AND a.deletedAt IS NULL
+        RETURN a ORDER BY a.versionCreatedAt DESC LIMIT 1
+    """)
+    fun findCurrentBySyncId(accountName: String, syncId: String): AppointmentNode?
 
     /**
-     * Returns the current version of an appointment regardless of archive state.
+     * Returns the most recent version of an appointment regardless of archive state, scoped to an account.
      * Used in processSingle so that archived appointments can be un-deleted or continued as a new version.
+     *
+     * Ordering: active rows (deletedAt IS NULL) first, then newest versionCreatedAt.
+     * LIMIT 1 guards against corrupted duplicate HAS_APPOINTMENT edges for the same syncId (BUG-2).
      */
-    @Query("MATCH ()-[:HAS_APPOINTMENT]->(a:Appointment {syncId: \$syncId}) RETURN a")
-    fun findCurrentOrArchivedBySyncId(syncId: String): AppointmentNode?
+    @Query("""
+        MATCH ()-[:HAS_APPOINTMENT]->(a:Appointment {syncId: ${'$'}syncId})
+        WHERE a.accountName = ${'$'}accountName
+        RETURN a
+        ORDER BY CASE WHEN a.deletedAt IS NULL THEN 0 ELSE 1 END, a.versionCreatedAt DESC
+        LIMIT 1
+    """)
+    fun findCurrentOrArchivedBySyncId(accountName: String, syncId: String): AppointmentNode?
 
     @Query("""
         MATCH (:CalendarNode {accountName: ${'$'}accountName})-[:HAS_APPOINTMENT]->(a:Appointment)
@@ -105,6 +121,27 @@ interface AppointmentRepository : Neo4jRepository<AppointmentNode, Long> {
      */
     @Query("MATCH (a:Appointment) WHERE id(a) = \$id SET a.deletedAt = \$now")
     fun softArchiveById(id: Long, now: Long)
+
+    /**
+     * Returns personal appointment nodes that are TRULY tombstoned: reachable via HAS_APPOINTMENT
+     * edge with deletedAt IS NOT NULL AND no active sibling (same syncId, HAS_APPOINTMENT, deletedAt IS NULL).
+     *
+     * Correctly handles the appointment version model: when a new version is saved, the old node gets
+     * removeHasAppointmentEdge (no edge anymore) — those old nodes are NOT returned here.
+     * Only nodes where the ENTIRE lineage via HAS_APPOINTMENT is archived are considered tombstones.
+     *
+     * Shared calendar appointments are excluded by design (only CalendarNode traversal used).
+     */
+    @Query("""
+        MATCH (:CalendarNode {accountName: ${'$'}accountName})-[:HAS_APPOINTMENT]->(a:Appointment)
+        WHERE a.syncId IN ${'$'}syncIds AND a.deletedAt IS NOT NULL
+        AND NOT EXISTS {
+            MATCH (:CalendarNode {accountName: ${'$'}accountName})-[:HAS_APPOINTMENT]->(active:Appointment {syncId: a.syncId})
+            WHERE active.deletedAt IS NULL
+        }
+        RETURN DISTINCT a
+    """)
+    fun findAllTombstonedPersonalByAccountNameAndSyncIdIn(accountName: String, syncIds: List<String>): List<AppointmentNode>
 
     // --- Cross-calendar queries ---
 

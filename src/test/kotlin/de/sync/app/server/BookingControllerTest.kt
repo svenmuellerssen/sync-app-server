@@ -80,7 +80,7 @@ class BookingControllerTest : EndpointTestSupport() {
     fun `create booking returns 201`() {
         val sharedCalendar = sharedCalendar("cal-1")
         val owner = AccountNode(username = TEST_ACCOUNT, passwordHash = "hash")
-        Mockito.`when`(sharedCalendarRepository.findByCalendarId("cal-1")).thenReturn(sharedCalendar)
+        Mockito.`when`(sharedCalendarRepository.findByCalendarIdAndDeletedAtIsNull("cal-1")).thenReturn(sharedCalendar)
         Mockito.`when`(accountRepository.findByUsername(TEST_ACCOUNT)).thenReturn(owner)
         Mockito.`when`(bookingRepository.findAllOverlappingRange(TEST_ACCOUNT, 10L, 20L)).thenReturn(emptyList())
         Mockito.`when`(sharedCalendarRepository.findMemberUsernamesByCalendarIds(listOf("cal-1")))
@@ -128,7 +128,7 @@ class BookingControllerTest : EndpointTestSupport() {
         val existing = activeBooking()
         val newCalendar = sharedCalendar("cal-2")
         Mockito.`when`(bookingRepository.findById(1L)).thenReturn(Optional.of(existing))
-        Mockito.`when`(sharedCalendarRepository.findByCalendarId("cal-2")).thenReturn(newCalendar)
+        Mockito.`when`(sharedCalendarRepository.findByCalendarIdAndDeletedAtIsNull("cal-2")).thenReturn(newCalendar)
         Mockito.`when`(bookingRepository.findAllOverlappingRange(TEST_ACCOUNT, 30L, 40L)).thenReturn(emptyList())
         Mockito.`when`(sharedCalendarRepository.findMemberUsernamesByCalendarIds(listOf("cal-1")))
             .thenReturn(listOf(TEST_ACCOUNT))
@@ -295,6 +295,111 @@ class BookingControllerTest : EndpointTestSupport() {
 
         mockMvc.perform(authenticated(delete("/booking/1/message/1")))
             .andExpect(status().isNoContent)
+    }
+
+    // -------------------------------------------------------------------------
+    // BC-v1: startTime <= 0 → 400
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `BC-v1 startTime zero returns 400`() {
+        mockMvc.perform(
+            authenticated(post("/booking"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"title":"T","startTime":0,"endTime":100,"sharedCalendarId":"c"}""")
+        ).andExpect(status().isBadRequest)
+    }
+
+    // -------------------------------------------------------------------------
+    // BC-v2: endTime <= startTime → 400
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `BC-v2 endTime before startTime returns 400`() {
+        mockMvc.perform(
+            authenticated(post("/booking"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"title":"T","startTime":200,"endTime":100,"sharedCalendarId":"c"}""")
+        ).andExpect(status().isBadRequest)
+    }
+
+    // -------------------------------------------------------------------------
+    // BC-v3: sharedCalendarId blank (@NotBlank) → 400
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `BC-v3 blank sharedCalendarId returns 400`() {
+        mockMvc.perform(
+            authenticated(post("/booking"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"title":"T","startTime":1,"endTime":2,"sharedCalendarId":""}""")
+        ).andExpect(status().isBadRequest)
+    }
+
+    // -------------------------------------------------------------------------
+    // BC-v4: title blank (@NotBlank) → 400
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `BC-v4 blank title returns 400`() {
+        mockMvc.perform(
+            authenticated(post("/booking"))
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""{"title":"","startTime":1,"endTime":2,"sharedCalendarId":"c"}""")
+        ).andExpect(status().isBadRequest)
+    }
+
+    // -------------------------------------------------------------------------
+    // BC-v5: booking not found → 404
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `BC-v5 get nonexistent booking returns 404`() {
+        Mockito.`when`(bookingRepository.findById(99L)).thenReturn(Optional.empty())
+
+        mockMvc.perform(authenticated(get("/booking/99")))
+            .andExpect(status().isNotFound)
+    }
+
+    // -------------------------------------------------------------------------
+    // BC-v6: cancelled booking → 404
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `BC-v6 get cancelled booking returns 404`() {
+        val cancelled = BookingNode(
+            id = 1L,
+            bookingId = "bk-x",
+            accountName = TEST_ACCOUNT,
+            title = "Cancelled",
+            startTime = 10L,
+            endTime = 20L,
+            cancelledAt = 999L,
+        )
+        Mockito.`when`(bookingRepository.findById(1L)).thenReturn(Optional.of(cancelled))
+
+        mockMvc.perform(authenticated(get("/booking/1")))
+            .andExpect(status().isNotFound)
+    }
+
+    // -------------------------------------------------------------------------
+    // BC-v7: booking owned by other account → ownership check fails → 404
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `BC-v7 delete booking owned by other account returns 404`() {
+        val othersBooking = BookingNode(
+            id = 1L,
+            bookingId = "bk-other",
+            accountName = "other-user",
+            title = "Not mine",
+            startTime = 10L,
+            endTime = 20L,
+        )
+        Mockito.`when`(bookingRepository.findById(1L)).thenReturn(Optional.of(othersBooking))
+
+        mockMvc.perform(authenticated(delete("/booking/1")))
+            .andExpect(status().isNotFound)
     }
 
     @Test

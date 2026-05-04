@@ -4,6 +4,7 @@ import de.sync.app.server.graph.AppointmentNode
 import de.sync.app.server.graph.AppointmentRepository
 import de.sync.app.server.graph.BookingNode
 import de.sync.app.server.graph.BookingRepository
+import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.data.redis.core.RedisTemplate
 import org.springframework.data.redis.core.ScanOptions
@@ -25,6 +26,8 @@ class SlotService(
     @Qualifier("jsonRedisTemplate")
     private val jsonRedisTemplate: RedisTemplate<String, Any>,
 ) {
+
+    private val logger = LoggerFactory.getLogger(SlotService::class.java)
 
     fun findAvailableSlots(accountName: String, fromIso: String, toIso: String, durationMinutes: Long): List<TimeSlot> {
         require(durationMinutes in 1L..480) { "duration must be between 1 and 480 minutes (8h)" }
@@ -125,8 +128,13 @@ class SlotService(
         val queryFrom = startOfDay - PADDING_MS
         val queryTo = endOfDay + PADDING_MS
 
-        val appointments = appointmentRepository.findAllOverlappingRange(accountName, queryFrom, queryTo).mapNotNull {
-            busyIntervalFor(day, it.startTime(), it.endTime())
+        val appointments = appointmentRepository.findAllOverlappingRange(accountName, queryFrom, queryTo).mapNotNull { apt ->
+            try {
+                busyIntervalFor(day, apt.startTime(), apt.endTime())
+            } catch (e: java.time.format.DateTimeParseException) {
+                logger.warn("Skipping appointment syncId='${apt.syncId}': unparseable duration '${apt.duration}': ${e.message}")
+                null
+            }
         }
         val bookings = bookingRepository.findAllOverlappingRange(accountName, queryFrom, queryTo).mapNotNull {
             busyIntervalFor(day, it.startTime, it.endTime)
@@ -209,9 +217,9 @@ class SlotService(
 
     private fun AppointmentNode.startTime(): Long = dtStart
 
-    private fun AppointmentNode.endTime(): Long = dtEnd ?: duration?.let {
-        runCatching { dtStart + Duration.parse(it).toMillis() }.getOrNull()
-    } ?: (dtStart + QUARTER_HOUR_MS)
+    private fun AppointmentNode.endTime(): Long = dtEnd
+        ?: duration?.let { dtStart + Duration.parse(it).toMillis() }
+        ?: (dtStart + QUARTER_HOUR_MS)
 
     private fun cacheKey(accountName: String, day: LocalDate): String = "slots:$accountName:${ZONE.id}:$day"
 

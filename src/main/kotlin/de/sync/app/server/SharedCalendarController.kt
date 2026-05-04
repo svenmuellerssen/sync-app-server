@@ -4,6 +4,8 @@ import de.sync.app.server.cache.SessionRepository
 import de.sync.app.server.cache.SharedCalendarInviteEntity
 import de.sync.app.server.cache.SharedCalendarInviteRepository
 import de.sync.app.server.graph.*
+import org.springframework.data.redis.RedisConnectionFailureException
+import org.springframework.http.HttpStatus
 import org.springframework.http.ResponseEntity
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.*
@@ -96,9 +98,13 @@ class SharedCalendarController(
             return ResponseEntity.status(403).build()
 
         val code = (1..7).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".random() }.joinToString("")
-        sharedCalendarInviteRepository.save(
-            SharedCalendarInviteEntity(inviteCode = code, calendarId = calendarId, createdBy = accountName)
-        )
+        try {
+            sharedCalendarInviteRepository.save(
+                SharedCalendarInviteEntity(inviteCode = code, calendarId = calendarId, createdBy = accountName)
+            )
+        } catch (e: RedisConnectionFailureException) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build()
+        }
         return ResponseEntity.ok(InviteCodeDto(code = code, expiresInSeconds = 600, calendarId = calendarId))
     }
 
@@ -114,7 +120,6 @@ class SharedCalendarController(
 
         val cal = sharedCalendarRepository.findByCalendarIdAndDeletedAtIsNull(invite.calendarId)
             ?: return ResponseEntity.status(404).build()
-        val account = accountRepository.findByUsername(accountName) ?: return ResponseEntity.status(401).build()
 
         if (cal.createdBy == accountName) {
             // Owner rejoining via invite code — skip, but consume the code
@@ -122,8 +127,7 @@ class SharedCalendarController(
             return ResponseEntity.ok(cal.toDto())
         }
         if (cal.members.none { it.username == accountName }) {
-            cal.members.add(account)
-            sharedCalendarRepository.save(cal)
+            sharedCalendarRepository.addMemberByUsername(cal.calendarId, accountName)
         }
         sharedCalendarInviteRepository.deleteById(request.inviteCode)
         return ResponseEntity.ok(cal.toDto())

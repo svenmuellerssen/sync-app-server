@@ -4,7 +4,9 @@ import de.sync.app.server.graph.*
 import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.ResponseEntity
 import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestHeader
@@ -114,6 +116,21 @@ class ContactsController(
         val revision = UUID.randomUUID().toString()
         slotService.invalidateAccount(accountName)
         return ResponseEntity.ok(BackupResponse(revision = revision, contactsStored = stored))
+    }
+
+    @DeleteMapping("/{lookupKey}")
+    @Transactional
+    fun deleteContact(
+        @RequestHeader("X-Sync-Token") token: String,
+        @PathVariable lookupKey: String,
+        request: HttpServletRequest,
+    ): ResponseEntity<Void> {
+        val accountName = request.getAttribute("accountName") as String
+        val existing = contactRepository.findAllByAccountNameAndLookupKeyIn(accountName, listOf(lookupKey))
+            .firstOrNull { it.deletedAt == null } ?: return ResponseEntity.notFound().build()
+        contactRepository.setDeletedAt(existing.id!!, System.currentTimeMillis())
+        slotService.invalidateAccount(accountName)
+        return ResponseEntity.noContent().build()
     }
 }
 

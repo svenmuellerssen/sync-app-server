@@ -51,10 +51,18 @@ class SyncController(
         val serverNodes = contactRepository.findAllByAccountNameAndDeletedAtIsNull(accountName)
         val serverMap = serverNodes.associateBy { it.syncId }
 
+        // Tombstone check: syncIds reported by phone that were explicitly deleted on the server.
+        // The query correctly excludes false positives where a contact was merely updated
+        // (old version archived with deletedAt, new version active with deletedAt=null).
+        val localSyncIds = localMap.keys.toList()
+        val tombstoneSyncIds = if (localSyncIds.isEmpty()) emptySet()
+            else contactRepository.findAllTombstonedByAccountNameAndSyncIdIn(accountName, localSyncIds)
+                .map { it.syncId }.toSet()
+
         val missingOnPhone = serverMap.keys - localMap.keys
         val toDownload = missingOnPhone.mapNotNull { serverMap[it]?.toDto() }
-        // Include contacts missing from server + contacts where phone version is newer than server.
-        val toUpload = ((localMap.keys - serverMap.keys) + serverNodes.filter { node ->
+        // Exclude tombstoned syncIds from toUpload — don't re-upload explicitly deleted contacts.
+        val toUpload = ((localMap.keys - serverMap.keys - tombstoneSyncIds) + serverNodes.filter { node ->
             val local = localMap[node.syncId]
             local != null && local.lastUpdatedAt > node.lastUpdatedAt
         }.map { it.syncId }).toList()
@@ -63,11 +71,17 @@ class SyncController(
             local != null && node.lastUpdatedAt > local.lastUpdatedAt
         }.map { it.toDto() }
 
-        return ContactManifest(toUpload = toUpload, toDownload = toDownload, toUpdate = toUpdate)
+        return ContactManifest(
+            toUpload = toUpload,
+            toDownload = toDownload,
+            toUpdate = toUpdate,
+            toDeleteLocally = tombstoneSyncIds.toList(),
+        )
     }
 
     private fun buildAppointmentManifest(request: ManifestRequest, accountName: String): AppointmentManifest {
         val localMap = request.appointments.associateBy { it.syncId }
+        val now = System.currentTimeMillis()
 
         // Include own shared-calendar appointments so the manifest sees them as "already on server"
         // and doesn't put them in toUpload every sync (Bug 2 fix).
@@ -76,39 +90,39 @@ class SyncController(
         val serverNodes = personalNodes + ownSharedNodes
         val serverMap = serverNodes.associateBy { it.syncId }
 
-        // G1 fix: only soft-archive when the phone actually confirmed a successful read.
-        // If the phone sends an empty list without confirmedEmpty=true, it could be a read
-        // error or permission denial — we must not soft-archive all server appointments.
-        val canSoftArchive = localMap.isNotEmpty() || request.confirmedEmpty
-        val now = System.currentTimeMillis()
-        if (canSoftArchive) {
-            val missingOnPhone = serverNodes.filter { it.syncId !in localMap }
-            missingOnPhone.forEach { node -> appointmentRepository.softArchiveById(node.id!!, now) }
-        }
-
         // G3 fix: dedup by content-key, soft-archive losers (preserve history) instead of hard-delete.
         // Keeps the oldest node (smallest createdAt) as the canonical version.
+        var dedupArchived = false
         val surviving = serverNodes.filter { it.syncId in localMap }
         surviving.groupBy { DedupKey(it.title, it.dtStart, it.dtEnd, it.rrule) }.forEach { (_, group) ->
             if (group.size > 1) {
                 val oldest = group.minByOrNull { it.createdAt }!!
                 group.filter { it.id != oldest.id }.forEach {
                     appointmentRepository.softArchiveById(it.id!!, now)
+                    dedupArchived = true
                 }
             }
         }
 
-        // Invalidate slot cache if any appointments were soft-archived or deduped (G6 fix).
-        if (canSoftArchive) {
-            slotService.invalidateAccount(accountName)
-        }
+        // Tombstone check: syncIds reported by phone that are explicitly deleted on the server.
+        // Only covers personal appointments — shared-event tombstones are out of scope.
+        val localSyncIds = localMap.keys.toList()
+        val tombstoneSyncIds = if (localSyncIds.isEmpty()) emptySet()
+            else appointmentRepository.findAllTombstonedPersonalByAccountNameAndSyncIdIn(accountName, localSyncIds)
+                .map { it.syncId }.toSet()
 
-        val toUpload = (localMap.keys - serverMap.keys).toList()
+        // Merge model: appointments missing from phone go to toDownload (never soft-archived).
+        // Tombstoned syncIds are excluded from toUpload — don't re-upload explicitly deleted appointments.
+        val toUpload = (localMap.keys - serverMap.keys - tombstoneSyncIds).toList()
 
-        // G4/G5 fix: shared calendar appointments from OTHER members — download to this phone.
-        // findAllCurrentByAccountName (used above) already returns only LOCAL cal appointments,
-        // so personal appointments never leak into sharedCalendarAppointments (G5).
-        // The accountName filter below handles G4 (own shared-cal uploads never re-downloaded).
+        // Personal appointments: missing on phone → toDownload; server newer → toUpdate.
+        val personalToDownload = personalNodes.filter { it.syncId !in localMap }.map { it.toDto() }
+        val personalToUpdate = personalNodes.filter { node ->
+            val local = localMap[node.syncId]
+            local != null && node.lastUpdatedAt > local.lastUpdatedAt
+        }.map { it.toDto() }
+
+        // Shared calendar appointments from OTHER members — download to this phone (G4/G5 fix).
         val sharedCalendars = sharedCalendarRepository.findAllAccessibleByAccountName(accountName)
         val calendarIds = sharedCalendars.map { it.calendarId }
         val sharedCalendarAppointments = if (calendarIds.isEmpty()) emptyList()
@@ -121,10 +135,16 @@ class SyncController(
             local != null && node.accountName != accountName && node.lastUpdatedAt > local.lastUpdatedAt
         }.map { it.toDto() }
 
+        // Invalidate slot cache only when G3 dedup actually archived something.
+        if (dedupArchived) {
+            slotService.invalidateAccount(accountName)
+        }
+
         return AppointmentManifest(
             toUpload = toUpload,
-            toDownload = sharedToDownload.toMutableList(),
-            toUpdate = sharedToUpdate.toMutableList(),
+            toDownload = (personalToDownload + sharedToDownload).toMutableList(),
+            toUpdate = (personalToUpdate + sharedToUpdate).toMutableList(),
+            toDeleteLocally = tombstoneSyncIds.toList(),
         )
     }
 }

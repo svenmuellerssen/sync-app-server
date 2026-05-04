@@ -23,6 +23,7 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delet
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
+import org.springframework.data.redis.RedisConnectionFailureException
 import java.util.Optional
 
 @WebMvcTest(
@@ -209,5 +210,108 @@ class SharedCalendarControllerTest : EndpointTestSupport() {
             authenticated(get("/calendar/google"))
         )
             .andExpect(status().isOk)
+    }
+
+    // -------------------------------------------------------------------------
+    // SCS-v1: invite without valid session → 401
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `SCS-v1 invite without valid session returns 401`() {
+        Mockito.`when`(sessionRepository.findById(TEST_TOKEN)).thenReturn(Optional.empty())
+
+        mockMvc.perform(authenticated(get("/shared-calendar/invite/cal-1")))
+            .andExpect(status().isUnauthorized)
+    }
+
+    // -------------------------------------------------------------------------
+    // SCS-v2: invite for calendar not owned by caller → 403
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `SCS-v2 invite for calendar not owned by caller returns 403`() {
+        Mockito.`when`(sessionRepository.findById(TEST_TOKEN))
+            .thenReturn(Optional.of(SessionEntity(TEST_TOKEN, TEST_ACCOUNT)))
+        Mockito.`when`(sharedCalendarRepository.findByCalendarIdAndDeletedAtIsNull("cal-1"))
+            .thenReturn(
+                SharedCalendarNode(
+                    calendarId = "cal-1",
+                    name = "Team",
+                    createdBy = "other-owner",
+                    owner = AccountNode(username = "other-owner", passwordHash = "h"),
+                )
+            )
+
+        mockMvc.perform(authenticated(get("/shared-calendar/invite/cal-1")))
+            .andExpect(status().isForbidden)
+    }
+
+    // -------------------------------------------------------------------------
+    // SCS-v3: calendar owner tries to leave → 409
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `SCS-v3 owner tries to leave own calendar returns 409`() {
+        Mockito.`when`(sessionRepository.findById(TEST_TOKEN))
+            .thenReturn(Optional.of(SessionEntity(TEST_TOKEN, TEST_ACCOUNT)))
+        Mockito.`when`(sharedCalendarRepository.findByCalendarIdAndDeletedAtIsNull("cal-1"))
+            .thenReturn(
+                SharedCalendarNode(
+                    calendarId = "cal-1",
+                    name = "Team",
+                    createdBy = TEST_ACCOUNT,
+                    owner = AccountNode(username = TEST_ACCOUNT, passwordHash = "hash"),
+                )
+            )
+
+        mockMvc.perform(authenticated(delete("/shared-calendar/cal-1/leave")))
+            .andExpect(status().isConflict)
+    }
+
+    // -------------------------------------------------------------------------
+    // SCS-v4: non-owner tries to delete calendar → 403
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `SCS-v4 non-owner tries to delete calendar returns 403`() {
+        Mockito.`when`(sessionRepository.findById(TEST_TOKEN))
+            .thenReturn(Optional.of(SessionEntity(TEST_TOKEN, TEST_ACCOUNT)))
+        Mockito.`when`(sharedCalendarRepository.findByCalendarId("cal-1"))
+            .thenReturn(
+                SharedCalendarNode(
+                    calendarId = "cal-1",
+                    name = "Team",
+                    createdBy = "other-owner",
+                    owner = AccountNode(username = "other-owner", passwordHash = "h"),
+                )
+            )
+
+        mockMvc.perform(authenticated(delete("/shared-calendar/cal-1")))
+            .andExpect(status().isForbidden)
+    }
+
+    // -------------------------------------------------------------------------
+    // SC-R1: Redis nicht erreichbar beim Invite-Code speichern → 503 statt 500
+    // Derzeit: unbehandelte Exception → 500 (RED).
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `SC-R1 generate invite returns 503 when Redis is unavailable`() {
+        Mockito.`when`(sessionRepository.findById(TEST_TOKEN))
+            .thenReturn(Optional.of(SessionEntity(TEST_TOKEN, TEST_ACCOUNT)))
+        Mockito.`when`(sharedCalendarRepository.findByCalendarIdAndDeletedAtIsNull("cal-r1"))
+            .thenReturn(
+                SharedCalendarNode(
+                    calendarId = "cal-r1",
+                    name = "Team",
+                    createdBy = TEST_ACCOUNT,
+                    owner = AccountNode(username = TEST_ACCOUNT, passwordHash = "hash"),
+                )
+            )
+        Mockito.`when`(sharedCalendarInviteRepository.save(Mockito.any()))
+            .thenThrow(RedisConnectionFailureException("Redis unavailable"))
+
+        mockMvc.perform(authenticated(get("/shared-calendar/invite/cal-r1")))
+            .andExpect(status().isServiceUnavailable)
     }
 }

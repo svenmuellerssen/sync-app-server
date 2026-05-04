@@ -4,6 +4,8 @@ import de.sync.app.server.graph.AccountNode
 import de.sync.app.server.graph.AccountRepository
 import de.sync.app.server.graph.AppointmentRepository
 import de.sync.app.server.graph.CalendarRepository
+import de.sync.app.server.graph.ContactNode
+import de.sync.app.server.graph.ContactRepository
 import de.sync.app.server.graph.SharedCalendarRepository
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.BeforeEach
@@ -28,6 +30,7 @@ class AppointmentServiceIntegrationTest {
     @Autowired private lateinit var calendarRepository: CalendarRepository
     @Autowired private lateinit var sharedCalendarRepository: SharedCalendarRepository
     @Autowired private lateinit var accountRepository: AccountRepository
+    @Autowired private lateinit var contactRepository: ContactRepository
     @Autowired private lateinit var stringRedisTemplate: StringRedisTemplate
     @Autowired private lateinit var driver: Driver
 
@@ -225,25 +228,26 @@ class AppointmentServiceIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
-    // AS11: Orphan archivization — appointment absent from batch is archived
+    // AS11: processBatch darf Orphan-Archivierung NICHT selbst durchführen
+    //       (Regression für BUG-1 — Archivierung obliegt dem SyncController)
     // -------------------------------------------------------------------------
 
     @Test
-    fun `AS11 appointment absent from batch is soft-archived after upload`() {
+    fun `AS11 processBatch does not archive appointments absent from the batch`() {
         appointmentService.processBatch(
             listOf(dto(syncId = "s1"), dto(syncId = "s2", lastUpdatedAt = 300)),
             TEST_ACCOUNT,
         )
 
-        // Second batch only contains s1 — s2 is gone from the phone
+        // Second batch only contains s1 — s2 is absent, but processBatch must NOT archive it.
+        // Archival is the responsibility of SyncController.buildAppointmentManifest, not processBatch.
+        // BUG-1: archiveOrphanedPersonalAppointments(knownSyncIds=["s1"]) in processBatch archives s2 → RED
         appointmentService.processBatch(listOf(dto(syncId = "s1")), TEST_ACCOUNT)
 
         val active = appointmentRepository.findAllCurrentByAccountName(TEST_ACCOUNT)
-        assertThat(active).hasSize(1)
-        assertThat(active.single().syncId).isEqualTo("s1")
-
-        val all = appointmentRepository.findAllBySyncIdOrderByVersionCreatedAtDesc("s2")
-        assertThat(all.single().deletedAt).isNotNull()
+        assertThat(active.map { it.syncId })
+            .describedAs("s2 must remain active — processBatch must not archive orphans")
+            .containsExactlyInAnyOrder("s1", "s2")
     }
 
     // -------------------------------------------------------------------------
@@ -280,6 +284,161 @@ class AppointmentServiceIntegrationTest {
         )
 
         assertThat(stringRedisTemplate.keys("slots:bob:*")).isEmpty()
+    }
+
+    // -------------------------------------------------------------------------
+    // AS14: BUG-1 — Delta-Upload darf pre-existing Appointments NICHT archivieren
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `AS14 BUG-1 delta upload must not archive pre-existing appointments`() {
+        // Arrange: zwei Termine bereits auf dem Server gespeichert
+        appointmentService.processBatch(listOf(dto(syncId = "s1"), dto(syncId = "s2")), TEST_ACCOUNT)
+
+        // Act: Delta-Upload — nur neuer Termin s3 (simuliert manifest-basierten Incremental-Sync:
+        // die App schickt nur toUpload-Einträge, nicht die gesamte Phone-Liste)
+        appointmentService.processBatch(listOf(dto(syncId = "s3")), TEST_ACCOUNT)
+
+        // Assert: alle drei Termine müssen aktiv bleiben — s1 und s2 dürfen nicht archiviert werden
+        // BUG-1: processBatch() ruft archiveOrphanedPersonalAppointments(knownSyncIds=["s3"]) auf
+        // → s1 und s2 werden fälschlicherweise soft-archiviert → Test schlägt fehl bis Bug gefixt
+        val active = appointmentRepository.findAllCurrentByAccountName(TEST_ACCOUNT)
+        assertThat(active.map { it.syncId }).containsExactlyInAnyOrder("s1", "s2", "s3")
+    }
+
+    // -------------------------------------------------------------------------
+    // CC4: BUG-2 — findByLookupKey() ohne accountName-Filter → Cross-Account-Leakage
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `CC4 BUG-2 attendee contact lookup must not cross account boundaries`() {
+        // Arrange: Kontakt von "alice" mit lookupKey "cc4-lk" — TEST_ACCOUNT ("testuser") hat diesen
+        // lookupKey NICHT
+        contactRepository.save(
+            ContactNode(
+                syncId = "cc4-contact",
+                lookupKey = "cc4-lk",
+                accountName = "alice",
+                lastUpdatedAt = 100L,
+                createdAt = 100L,
+                displayName = "Alice Contact",
+            )
+        )
+
+        // Act: TEST_ACCOUNT lädt Termin hoch mit Attendee, dessen contactLookupKey zu alice gehört
+        val attendeeDto = AttendeeDto(name = "Alice", contactLookupKey = "cc4-lk")
+        val apptDto = AppointmentDtoRequest(
+            syncId = "cc4-apt",
+            title = "Meeting",
+            dtStart = 1_000_000L,
+            dtEnd = 1_003_600L,
+            allDay = false,
+            timezone = "Europe/Berlin",
+            calendarName = "TestKal",
+            lastUpdatedAt = 200L,
+            attendees = listOf(attendeeDto),
+        )
+        appointmentService.processBatch(listOf(apptDto), TEST_ACCOUNT)
+
+        // Assert: der Attendee-Node darf KEINE IS_CONTACT-Kante zu Alice's Kontakt haben —
+        // TEST_ACCOUNT hat keinen eigenen Kontakt mit diesem lookupKey
+        // BUG-2: findByLookupKey("cc4-lk") gibt Alices Kontakt zurück (kein accountName-Filter)
+        // → IS_CONTACT-Kante wird trotzdem gesetzt → Test schlägt fehl bis Bug gefixt
+        val linkedAccountName = driver.session().use { session ->
+            val result = session.run(
+                """
+                MATCH (:Appointment {syncId: ${'$'}syncId})-[:HAS_ATTENDEE]->(:Attendee)-[:IS_CONTACT]->(c:Contact)
+                RETURN c.accountName AS acct
+                """.trimIndent(),
+                mapOf("syncId" to "cc4-apt"),
+            )
+            if (result.hasNext()) result.single()["acct"].asString() else null
+        }
+        assertThat(linkedAccountName)
+            .describedAs("Attendee must not be linked to a contact from a different account")
+            .isNull()
+    }
+
+    // -------------------------------------------------------------------------
+    // AS16: BUG-2 — Doppelte HAS_APPOINTMENT-Kanten dürfen findCurrentOrArchivedBySyncId
+    //        nicht zum Absturz bringen und processBatch nicht zurückrollen lassen
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `AS16 BUG-2 duplicate HAS_APPOINTMENT edges do not crash findCurrentOrArchivedBySyncId`() {
+        // Arrange: directly inject two AppointmentNodes with the same syncId and two HAS_APPOINTMENT edges.
+        // This simulates corrupted state caused by BUG-1 cycles (each batch re-uploaded the same node).
+        driver.session().use { session ->
+            session.run(
+                """
+                CREATE (cal:CalendarNode {calendarId: 'cal-bug2', accountName: ${'$'}acc,
+                    name: 'Bug2Cal', calendarType: 'LOCAL'})
+                CREATE (a1:Appointment {syncId: ${'$'}sid, accountName: ${'$'}acc, title: 'V1',
+                    versionId: randomUUID(), versionCreatedAt: 100, createdAt: 100, lastUpdatedAt: 100,
+                    dtStart: 0, dtEnd: 0, allDay: false, timezone: 'UTC',
+                    contentHash: 'h1', calendarId: 'cal-bug2'})
+                CREATE (a2:Appointment {syncId: ${'$'}sid, accountName: ${'$'}acc, title: 'V2',
+                    versionId: randomUUID(), versionCreatedAt: 200, createdAt: 200, lastUpdatedAt: 200,
+                    dtStart: 0, dtEnd: 0, allDay: false, timezone: 'UTC',
+                    contentHash: 'h2', calendarId: 'cal-bug2'})
+                CREATE (cal)-[:HAS_APPOINTMENT]->(a1)
+                CREATE (cal)-[:HAS_APPOINTMENT]->(a2)
+                """.trimIndent(),
+                mapOf("acc" to TEST_ACCOUNT, "sid" to "s-bug2"),
+            )
+        }
+
+        // Act — must not throw IncorrectResultSizeDataAccessException.
+        // BUG-2: RETURN a without LIMIT returns both nodes; SDN6 .single() throws → RED until fixed.
+        val found = appointmentRepository.findCurrentOrArchivedBySyncId(TEST_ACCOUNT, "s-bug2")
+        assertThat(found).isNotNull()
+
+        // processBatch must not cause UnexpectedRollbackException on this syncId.
+        val batchResult = appointmentService.processBatch(
+            listOf(dto(syncId = "s-bug2", lastUpdatedAt = 300)),
+            TEST_ACCOUNT,
+        )
+        assertThat(batchResult.stored + batchResult.skipped)
+            .describedAs("batch must not roll back — exactly one entry stored or skipped")
+            .isEqualTo(1)
+    }
+
+    // -------------------------------------------------------------------------
+    // AS15: Archived appointment with content change is re-created as new version
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `AS15 archived appointment with content change is re-created as new version`() {
+        // Upload V1
+        appointmentService.processBatch(
+            listOf(dto(syncId = "s1", title = "V1", lastUpdatedAt = 100)),
+            TEST_ACCOUNT,
+        )
+
+        // Archive V1 — simulate the phone no longer having this appointment
+        appointmentRepository.archiveOrphanedPersonalAppointments(TEST_ACCOUNT, emptyList(), NOW)
+
+        val archivedNodes = appointmentRepository.findAllBySyncIdOrderByVersionCreatedAtDesc("s1")
+        assertThat(archivedNodes).hasSize(1)
+        assertThat(archivedNodes.single().deletedAt).isNotNull()
+
+        // Upload same syncId with a different title (content change) and higher lastUpdatedAt
+        val result = appointmentService.processBatch(
+            listOf(dto(syncId = "s1", title = "V2-changed", lastUpdatedAt = 200)),
+            TEST_ACCOUNT,
+        )
+
+        assertThat(result.stored).isEqualTo(1)
+
+        // Two nodes must exist for this syncId: the archived V1 + the new V2
+        val allNodes = appointmentRepository.findAllBySyncIdOrderByVersionCreatedAtDesc("s1")
+        assertThat(allNodes).hasSize(2)
+
+        // Only V2 is active (deletedAt = null) and has the updated title
+        val active = appointmentRepository.findAllCurrentByAccountName(TEST_ACCOUNT)
+        assertThat(active).hasSize(1)
+        assertThat(active.single().title).isEqualTo("V2-changed")
+        assertThat(active.single().deletedAt).isNull()
     }
 
     // -------------------------------------------------------------------------

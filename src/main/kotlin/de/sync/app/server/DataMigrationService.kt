@@ -31,6 +31,7 @@ class DataMigrationService(private val driver: Driver) : CommandLineRunner {
         migrateAppointmentVersioning()
         migrateCalendarNodesAndHasAppointment()
         migrateSharedCalendarOwnsCalendar()
+        migrateDeduplicateHasAppointmentEdges()
     }
 
     private fun migrateAppointmentVersioning() {
@@ -151,6 +152,66 @@ class DataMigrationService(private val driver: Driver) : CommandLineRunner {
             val removed = cleanupResult.single()["removed"].asLong()
             if (removed > 0) {
                 log.info("Migration 3c (cleanup): removed {} redundant owner HAS_MEMBER edges", removed)
+            }
+        }
+    }
+
+    /**
+     * Migration 4: Deduplicate HAS_APPOINTMENT edges caused by BUG-1 cycles (added 2026-04).
+     *
+     * BUG-1 caused each processBatch call to archive all previously stored appointments and
+     * re-upload them, eventually producing multiple AppointmentNodes with the same syncId,
+     * each holding its own HAS_APPOINTMENT edge from the CalendarNode.
+     *
+     * This migration:
+     * 1. Groups Appointment nodes by (accountName, syncId).
+     * 2. For each group with more than one HAS_APPOINTMENT edge, picks the survivor:
+     *    - Active node (deletedAt IS NULL) over archived; if a tie, the newest versionCreatedAt wins.
+     * 3. Soft-archives the losers (sets deletedAt) and removes their HAS_APPOINTMENT edges.
+     */
+    private fun migrateDeduplicateHasAppointmentEdges() {
+        driver.session().use { session ->
+            // Find all (accountName, syncId) pairs that have more than one HAS_APPOINTMENT edge.
+            val dupsResult = session.run("""
+                MATCH ()-[:HAS_APPOINTMENT]->(a:Appointment)
+                WHERE a.syncId IS NOT NULL AND a.accountName IS NOT NULL
+                WITH a.accountName AS acc, a.syncId AS sid, count(*) AS cnt
+                WHERE cnt > 1
+                RETURN acc, sid
+            """.trimIndent())
+
+            var totalRemoved = 0L
+            for (record in dupsResult.list()) {
+                val acc = record["acc"].asString()
+                val sid = record["sid"].asString()
+
+                // Pick the survivor: active first, then newest versionCreatedAt.
+                // Remove HAS_APPOINTMENT edges from all other nodes and soft-archive them.
+                val removeResult = session.run("""
+                    MATCH (src)-[rel:HAS_APPOINTMENT]->(a:Appointment {syncId: ${'$'}sid, accountName: ${'$'}acc})
+                    WITH a, rel
+                    ORDER BY
+                        CASE WHEN a.deletedAt IS NULL THEN 0 ELSE 1 END ASC,
+                        a.versionCreatedAt DESC
+                    WITH collect({a: a, rel: rel}) AS rows
+                    WITH rows[0] AS survivor, rows[1..] AS losers
+                    FOREACH (entry IN losers |
+                        DELETE entry.rel
+                        SET entry.a.deletedAt = timestamp()
+                    )
+                    RETURN size(losers) AS removed
+                """.trimIndent(), mapOf("sid" to sid, "acc" to acc))
+
+                if (removeResult.hasNext()) {
+                    totalRemoved += removeResult.single()["removed"].asLong()
+                }
+            }
+
+            if (totalRemoved > 0) {
+                log.info(
+                    "Migration 4 (dedup HAS_APPOINTMENT): removed {} duplicate edges and soft-archived losers",
+                    totalRemoved,
+                )
             }
         }
     }

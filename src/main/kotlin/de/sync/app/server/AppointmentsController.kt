@@ -3,6 +3,7 @@ package de.sync.app.server
 import de.sync.app.server.graph.*
 import jakarta.servlet.http.HttpServletRequest
 import org.springframework.http.ResponseEntity
+import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PathVariable
 import org.springframework.web.bind.annotation.PostMapping
@@ -67,6 +68,19 @@ class AppointmentsController(
                 newCalendars = result.newCalendars.map { it.toDto() },
             )
         )
+    }
+
+    @DeleteMapping("/{syncId}")
+    fun deleteAppointment(
+        @RequestHeader("X-Sync-Token") token: String,
+        @PathVariable syncId: String,
+        request: HttpServletRequest,
+    ): ResponseEntity<Void> {
+        val accountName = request.getAttribute("accountName") as String
+        return if (appointmentService.deleteByExplicit(syncId, accountName))
+            ResponseEntity.noContent().build()
+        else
+            ResponseEntity.notFound().build()
     }
 }
 

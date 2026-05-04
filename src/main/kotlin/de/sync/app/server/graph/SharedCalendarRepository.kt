@@ -19,6 +19,17 @@ interface SharedCalendarRepository : Neo4jRepository<SharedCalendarNode, Long> {
     fun softDelete(calendarId: String, deletedAt: Long)
 
     /**
+     * Adds an account as a member (MEMBER_OF) of the given shared calendar.
+     * Idempotent — uses MERGE so calling twice has no effect.
+     */
+    @Query("""
+        MATCH (a:Account {username: ${'$'}username})
+        MATCH (sc:SharedCalendar {calendarId: ${'$'}calendarId})
+        MERGE (a)-[:MEMBER_OF]->(sc)
+    """)
+    fun addMemberByUsername(calendarId: String, username: String)
+
+    /**
      * Returns all shared calendars accessible to an account (owner via OWNS_CALENDAR + members via MEMBER_OF).
      */
     @Query("MATCH (:Account {username: \$accountName})-[:OWNS_CALENDAR|MEMBER_OF]->(sc:SharedCalendar) WHERE sc.deletedAt IS NULL RETURN sc")
