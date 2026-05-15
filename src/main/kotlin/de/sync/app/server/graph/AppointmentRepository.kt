@@ -16,14 +16,14 @@ interface AppointmentRepository : Neo4jRepository<AppointmentNode, Long> {
     @Query("MATCH (:CalendarNode {accountName: \$accountName})-[:HAS_APPOINTMENT]->(a:Appointment) WHERE a.deletedAt IS NULL RETURN a")
     fun findAllCurrentByAccountName(accountName: String): List<AppointmentNode>
 
-    /** Counts all current appointments for an account: personal (CalendarNode) + own shared-calendar entries. */
+    /** Counts all current appointments for an account (logical distinct by syncId): personal + own shared-calendar entries. */
     @Query("""
         MATCH (n)-[:HAS_APPOINTMENT]->(a:Appointment)
         WHERE (
             (n:CalendarNode AND n.accountName = ${'$'}accountName)
             OR (n:SharedCalendar AND n.deletedAt IS NULL AND a.accountName = ${'$'}accountName)
         ) AND a.deletedAt IS NULL
-        RETURN count(a)
+        RETURN count(DISTINCT coalesce(a.syncId, toString(id(a))))
     """)
     fun countAllCurrentByAccountName(accountName: String): Long
 
@@ -89,6 +89,51 @@ interface AppointmentRepository : Neo4jRepository<AppointmentNode, Long> {
      */
     @Query("MATCH ()-[r:HAS_APPOINTMENT]->(a:Appointment) WHERE id(a) = \$id DELETE r")
     fun removeHasAppointmentEdge(id: Long)
+
+    /**
+     * Deduplicates active HAS_APPOINTMENT edges for one (accountName, syncId) pair.
+     *
+     * Keeps one survivor (active preferred, then newest versionCreatedAt), removes all
+     * other HAS_APPOINTMENT edges, and soft-archives loser nodes.
+     *
+     * Returns the number of removed duplicate edges.
+     */
+    @Query("""
+        MATCH ()-[rel:HAS_APPOINTMENT]->(a:Appointment {accountName: ${'$'}accountName, syncId: ${'$'}syncId})
+        WITH a, rel
+        ORDER BY CASE WHEN a.deletedAt IS NULL THEN 0 ELSE 1 END ASC, a.versionCreatedAt DESC
+        WITH collect({a: a, rel: rel}) AS rows
+        WITH CASE WHEN size(rows) > 1 THEN rows[1..] ELSE [] END AS losers
+        FOREACH (entry IN losers |
+            DELETE entry.rel
+            SET entry.a.deletedAt = coalesce(entry.a.deletedAt, ${'$'}now)
+        )
+        RETURN size(losers)
+    """)
+    fun deduplicateHasAppointmentEdges(accountName: String, syncId: String, now: Long): Long
+
+    /**
+     * Deduplicates all active HAS_APPOINTMENT edges for an account, grouped by syncId.
+     *
+     * For each syncId with multiple active edges, keeps one survivor (active preferred,
+     * then newest versionCreatedAt), removes loser edges, and soft-archives loser nodes.
+     *
+     * Returns total number of removed duplicate edges.
+     */
+    @Query("""
+        MATCH ()-[rel:HAS_APPOINTMENT]->(a:Appointment {accountName: ${'$'}accountName})
+        WHERE a.syncId IS NOT NULL
+        WITH a.syncId AS sid, a, rel
+        ORDER BY sid, CASE WHEN a.deletedAt IS NULL THEN 0 ELSE 1 END ASC, a.versionCreatedAt DESC
+        WITH sid, collect({a: a, rel: rel}) AS rows
+        WHERE size(rows) > 1
+        WITH CASE WHEN size(rows) > 1 THEN rows[1..] ELSE [] END AS losers
+        UNWIND losers AS entry
+        DELETE entry.rel
+        SET entry.a.deletedAt = coalesce(entry.a.deletedAt, ${'$'}now)
+        RETURN count(entry)
+    """)
+    fun deduplicateHasAppointmentEdgesForAccount(accountName: String, now: Long): Long
 
     /**
      * Creates a HAS_APPOINTMENT edge from a SharedCalendarNode to an AppointmentNode.

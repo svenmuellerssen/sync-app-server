@@ -57,7 +57,7 @@ class ContactsController(
         val lookupKeys = batch.contacts.filter { it.syncId == null }.map { it.lookupKey }
 
         val bySyncId: Map<String, ContactNode> = if (syncIds.isNotEmpty())
-            contactRepository.findAllBySyncIdIn(syncIds).associateBy { it.syncId }
+            contactRepository.findAllBySyncIdIn(accountName, syncIds).associateBy { it.syncId }
         else emptyMap()
 
         val byLookupKey: Map<String, ContactNode> = if (lookupKeys.isNotEmpty())

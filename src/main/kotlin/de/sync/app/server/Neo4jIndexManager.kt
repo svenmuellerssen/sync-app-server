@@ -50,6 +50,7 @@ class Neo4jIndexManager(private val driver: Driver) : ApplicationRunner {
         )
 
         driver.session().use { session ->
+            removeLegacyContactSyncIdUniqueConstraints(session)
             var created = 0
             for (stmt in statements) {
                 try {
@@ -60,6 +61,32 @@ class Neo4jIndexManager(private val driver: Driver) : ApplicationRunner {
                 }
             }
             log.info("Neo4j index setup complete — {} statements executed", created)
+        }
+    }
+
+    private fun removeLegacyContactSyncIdUniqueConstraints(session: org.neo4j.driver.Session) {
+        val legacyConstraints = session.run(
+            """
+            SHOW CONSTRAINTS YIELD name, labelsOrTypes, properties, type
+            WHERE 'Contact' IN labelsOrTypes
+              AND properties = ['syncId']
+              AND type IN ['UNIQUENESS', 'NODE_PROPERTY_UNIQUENESS']
+            RETURN name
+            """.trimIndent(),
+        ).list { record -> record["name"].asString() }
+
+        for (constraintName in legacyConstraints) {
+            try {
+                val escapedName = constraintName.replace("`", "``")
+                session.run("DROP CONSTRAINT `$escapedName` IF EXISTS").consume()
+                log.info("Dropped legacy Contact.syncId unique constraint: {}", constraintName)
+            } catch (e: Exception) {
+                log.warn(
+                    "Failed to drop legacy Contact.syncId unique constraint {}: {}",
+                    constraintName,
+                    e.message,
+                )
+            }
         }
     }
 }

@@ -45,7 +45,7 @@ class ContactsHistoryIntegrationTest {
     }
 
     @Test
-    fun `changed contact creates new active version and previous version edge`() {
+    fun `should save contact versions with same syncId when a contact is updated`() {
         contactRepository.save(
             ContactNode(
                 syncId = "sync-1",
@@ -86,6 +86,34 @@ class ContactsHistoryIntegrationTest {
 
         // One PREVIOUS_VERSION edge links new → old
         assertThat(countPreviousVersionEdges("sync-1")).isEqualTo(1L)
+    }
+
+    @Test
+    fun `should return only requesting account contacts when loading by syncId list`() {
+        contactRepository.save(
+            ContactNode(
+                syncId = "shared-sync",
+                lookupKey = "lk-alice",
+                accountName = TEST_ACCOUNT,
+                lastUpdatedAt = 100L,
+                createdAt = 100L,
+                displayName = "Alice",
+            )
+        )
+        contactRepository.save(
+            ContactNode(
+                syncId = "shared-sync",
+                lookupKey = "lk-bob",
+                accountName = "bob",
+                lastUpdatedAt = 200L,
+                createdAt = 200L,
+                displayName = "Bob",
+            )
+        )
+
+        val result = contactRepository.findAllBySyncIdIn(TEST_ACCOUNT, listOf("shared-sync"))
+        assertThat(result).hasSize(1)
+        assertThat(result.single().accountName).isEqualTo(TEST_ACCOUNT)
     }
 
     private fun countContactsBySyncId(syncId: String): Long =

@@ -52,7 +52,7 @@ class ContactsControllerTest : EndpointTestSupport() {
 
     @Test
     fun `upload contacts returns 200`() {
-        Mockito.`when`(contactRepository.findAllBySyncIdIn(listOf("sync-1"))).thenReturn(emptyList())
+        Mockito.`when`(contactRepository.findAllBySyncIdIn(TEST_ACCOUNT, listOf("sync-1"))).thenReturn(emptyList())
         Mockito.`when`(contactRepository.findAllByAccountNameAndLookupKeyIn(TEST_ACCOUNT, listOf("lk-1")))
             .thenReturn(emptyList())
         Mockito.`when`(contactRepository.save(Mockito.any(de.sync.app.server.graph.ContactNode::class.java)))

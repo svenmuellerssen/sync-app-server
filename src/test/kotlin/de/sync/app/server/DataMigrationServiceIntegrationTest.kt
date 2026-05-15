@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.neo4j.driver.Driver
 import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.DefaultApplicationArguments
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
@@ -25,6 +26,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
 class DataMigrationServiceIntegrationTest {
 
     @Autowired private lateinit var migrationService: DataMigrationService
+    @Autowired private lateinit var neo4jIndexManager: Neo4jIndexManager
     @Autowired private lateinit var driver: Driver
 
     @BeforeEach
@@ -125,6 +127,37 @@ class DataMigrationServiceIntegrationTest {
             .isEqualTo(1)
     }
 
+    @Test
+    fun `DM4 should remove legacy unique constraint on Contact syncId when present`() {
+        driver.session().use { session ->
+            session.run("DROP INDEX contact_syncId IF EXISTS").consume()
+            session.run(
+                "CREATE CONSTRAINT legacy_contact_syncId_unique IF NOT EXISTS FOR (c:Contact) REQUIRE c.syncId IS UNIQUE"
+            ).consume()
+        }
+
+        assertThat(hasConstraint("legacy_contact_syncId_unique")).isTrue()
+
+        neo4jIndexManager.run(DefaultApplicationArguments(*emptyArray<String>()))
+
+        assertThat(hasConstraint("legacy_contact_syncId_unique")).isFalse()
+    }
+
+    @Test
+    fun `DM5 should keep contact versionId unique constraint after removing legacy syncId constraint`() {
+        driver.session().use { session ->
+            session.run("DROP INDEX contact_syncId IF EXISTS").consume()
+            session.run(
+                "CREATE CONSTRAINT legacy_contact_syncId_unique IF NOT EXISTS FOR (c:Contact) REQUIRE c.syncId IS UNIQUE"
+            ).consume()
+        }
+
+        neo4jIndexManager.run(DefaultApplicationArguments(*emptyArray<String>()))
+
+        assertThat(hasConstraint("legacy_contact_syncId_unique")).isFalse()
+        assertThat(hasConstraint("contact_versionId_unique")).isTrue()
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -135,6 +168,19 @@ class DataMigrationServiceIntegrationTest {
                 "MATCH ()-[:HAS_APPOINTMENT]->(a:Appointment {syncId: \$sid}) RETURN count(*) AS cnt",
                 mapOf("sid" to syncId),
             ).single()["cnt"].asLong()
+        }
+
+    private fun hasConstraint(constraintName: String): Boolean =
+        driver.session().use { session ->
+            val result = session.run(
+                """
+                SHOW CONSTRAINTS YIELD name
+                WHERE name = ${'$'}name
+                RETURN count(*) AS cnt
+                """.trimIndent(),
+                mapOf("name" to constraintName),
+            )
+            result.single()["cnt"].asLong() > 0
         }
 
     companion object {

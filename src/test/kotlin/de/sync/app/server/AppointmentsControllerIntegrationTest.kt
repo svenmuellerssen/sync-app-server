@@ -137,6 +137,87 @@ class AppointmentsControllerIntegrationTest {
             .andExpect(jsonPath("$.count").value(0))
     }
 
+    @Test
+    fun `should count appointments only once when multiple calendars reference same appointment node`() {
+        driver.session().use { s ->
+            s.run(
+                """
+                CREATE (owner:Account {username: ${'$'}account, passwordHash: 'x', createdAt: 0})
+                CREATE (cal1:CalendarNode {calendarId: 'cal-1', name: 'Cal1', calendarType: 'LOCAL', accountName: ${'$'}account})
+                CREATE (cal2:CalendarNode {calendarId: 'cal-2', name: 'Cal2', calendarType: 'LOCAL', accountName: ${'$'}account})
+                CREATE (a:Appointment {
+                    syncId: 'dup-count-sync',
+                    versionId: randomUUID(),
+                    contentHash: 'hash',
+                    calendarId: 'cal-1',
+                    accountName: ${'$'}account,
+                    title: 'Dup Count',
+                    dtStart: 1000,
+                    allDay: false,
+                    timezone: 'Europe/Berlin',
+                    lastUpdatedAt: 1000,
+                    createdAt: 1000,
+                    versionCreatedAt: 1000
+                })
+                CREATE (cal1)-[:HAS_APPOINTMENT]->(a)
+                CREATE (cal2)-[:HAS_APPOINTMENT]->(a)
+                """.trimIndent(),
+                mapOf("account" to ALICE),
+            )
+        }
+
+        mockMvc.perform(get("/appointments/count").header("X-Sync-Token", ALICE_TOKEN))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.count").value(1))
+    }
+
+    @Test
+    fun `should count by syncId when multiple active nodes share the same syncId`() {
+        driver.session().use { s ->
+            s.run(
+                """
+                CREATE (owner:Account {username: ${'$'}account, passwordHash: 'x', createdAt: 0})
+                CREATE (cal:CalendarNode {calendarId: 'cal-syncid', name: 'Cal', calendarType: 'LOCAL', accountName: ${'$'}account})
+                CREATE (a1:Appointment {
+                    syncId: 'dup-syncid',
+                    versionId: randomUUID(),
+                    contentHash: 'hash-1',
+                    calendarId: 'cal-syncid',
+                    accountName: ${'$'}account,
+                    title: 'Dup #1',
+                    dtStart: 1000,
+                    allDay: false,
+                    timezone: 'Europe/Berlin',
+                    lastUpdatedAt: 1000,
+                    createdAt: 1000,
+                    versionCreatedAt: 1000
+                })
+                CREATE (a2:Appointment {
+                    syncId: 'dup-syncid',
+                    versionId: randomUUID(),
+                    contentHash: 'hash-2',
+                    calendarId: 'cal-syncid',
+                    accountName: ${'$'}account,
+                    title: 'Dup #2',
+                    dtStart: 1000,
+                    allDay: false,
+                    timezone: 'Europe/Berlin',
+                    lastUpdatedAt: 1100,
+                    createdAt: 1100,
+                    versionCreatedAt: 1100
+                })
+                CREATE (cal)-[:HAS_APPOINTMENT]->(a1)
+                CREATE (cal)-[:HAS_APPOINTMENT]->(a2)
+                """.trimIndent(),
+                mapOf("account" to ALICE),
+            )
+        }
+
+        mockMvc.perform(get("/appointments/count").header("X-Sync-Token", ALICE_TOKEN))
+            .andExpect(status().isOk)
+            .andExpect(jsonPath("$.count").value(1))
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------

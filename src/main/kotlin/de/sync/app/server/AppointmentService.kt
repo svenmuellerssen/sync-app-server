@@ -84,6 +84,14 @@ class AppointmentService(
         now: Long,
         newCalendarsOut: MutableMap<String, CalendarNode>,
     ): SaveStatus {
+        val removedDuplicates = appointmentRepository.deduplicateHasAppointmentEdges(accountName, dto.syncId, now)
+        if (removedDuplicates > 0) {
+            log.warn(
+                "Deduplicated {} stale HAS_APPOINTMENT edge(s) for account={} syncId={}",
+                removedDuplicates, accountName, dto.syncId
+            )
+        }
+
         val existing = appointmentRepository.findCurrentOrArchivedBySyncId(accountName, dto.syncId)
 
         // Stale-overwrite protection: never regress to an older version

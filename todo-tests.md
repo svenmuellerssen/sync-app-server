@@ -52,6 +52,7 @@ Stand: 2026-05-02
 | AS13 | Slot-Cache aller SharedCalendar-Mitglieder nach Batch gelöscht | Bob's Redis-Key weg | ✅ |
 | AS14 | **BUG-1**: Delta-Upload (nur neue Termine) darf existierende Termine NICHT archivieren | Beide Termine aktiv nach `processBatch([new])` | ✅ (schlägt fehl bis BUG-1 gefixt) |
 | AS15 | Un-Archivierung: Termin per `softArchiveById` archiviert, dann Content-Change erneut hochgeladen → neuer Node + aktiv | `deletedAt=null`, 2 Nodes | ✅ |
+| AS16 | **BUG-2**: Doppelte aktive `HAS_APPOINTMENT`-Kanten für dieselbe `syncId` verursachen keinen Rollback und werden auf 1 Kante reduziert | Kein `IncorrectResultSizeDataAccessException`, `HAS_APPOINTMENT`-Count = 1 | ✅ |
 
 ---
 
@@ -173,6 +174,7 @@ Benötigt `@SpringBootTest` + Testcontainers (Neo4j + Redis) — analog `Appoint
 | AC1 | Upload ohne `X-Sync-Token` → 401 | TokenAuthInterceptor greift | ✅ |
 | AC2 | `GET /{syncId}/history` gibt nur Versionen des eigenen Accounts zurück | Client-seitiger Filter korrekt | ✅ |
 | AC3 | `GET /appointments/count` gibt korrekte Summe (Personal + SharedCal-Eigene) | Zähler inkl. SharedCal | ✅ |
+| AC4 | `GET /appointments/count` zählt doppelte aktive Nodes mit derselben `syncId` nur einmal | Zähler logisch dedupliziert über `syncId` | ✅ |
 
 ---
 
@@ -221,7 +223,7 @@ Interceptor-Tests sind vollständig. Keine offenen Tests.
 | 🟡 Mittel | BC-v1–BC-v7 (Validation) | Controller-Test | ✅ |
 | 🟡 Mittel | SCS-v1–SCS-v4 | Controller-Test | ✅ |
 | 🔵 Niedrig | SlotS1–SlotS4 | Unit Test | ✅ |
-| 🔵 Niedrig | AC1–AC3 | Integration | ✅ |
+| 🔵 Niedrig | AC1–AC4 | Integration | ✅ |
 
 ---
 

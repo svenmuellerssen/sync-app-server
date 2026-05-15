@@ -69,14 +69,14 @@ class SyncControllerIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
-    // SC2: Termin auf Server, nicht auf Phone → Merge-Modell: toDownload, KEIN Archivieren
+    // SC2: Termin auf Server, nicht auf Phone → soft-archivieren (Manifest Source of Truth)
     // -------------------------------------------------------------------------
 
     @Test
-    fun `SC2 appointment on server absent from phone manifest is returned in toDownload not archived`() {
+    fun `SC2 appointment on server absent from phone manifest is soft-archived`() {
         appointmentService.processBatch(listOf(apt("s1")), TEST_ACCOUNT)
 
-        // Phone sends s2 but NOT s1 — merge model: s1 must be downloaded, never archived
+        // Phone sends s2 but NOT s1 — s1 must be soft-archived.
         val body = manifest(appointments = listOf(SyncEntry("s2", 100L)), type = "appointments")
 
         mockMvc.perform(
@@ -86,10 +86,10 @@ class SyncControllerIntegrationTest {
                 .content(objectMapper.writeValueAsString(body))
         )
             .andExpect(status().isOk)
-            .andExpect(jsonPath("$.appointments.toDownload[0].syncId").value("s1"))
+            .andExpect(jsonPath("$.appointments.toDownload", hasSize<Any>(0)))
 
         val s1 = appointmentRepository.findCurrentOrArchivedBySyncId(TEST_ACCOUNT, "s1")
-        assertThat(s1?.deletedAt).describedAs("s1 must NOT be soft-archived — merge model never archives missing appointments").isNull()
+        assertThat(s1?.deletedAt).describedAs("s1 must be soft-archived when missing from a non-empty manifest").isNotNull()
     }
 
     // -------------------------------------------------------------------------
@@ -114,11 +114,11 @@ class SyncControllerIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
-    // SC4: Leere Liste + confirmedEmpty=true → Merge-Modell: toDownload, KEIN Archivieren
+    // SC4: Leere Liste + confirmedEmpty=true → alle persönlichen Termine archivieren
     // -------------------------------------------------------------------------
 
     @Test
-    fun `SC4 empty phone list with confirmedEmpty true returns personal appointments in toDownload not archived`() {
+    fun `SC4 empty phone list with confirmedEmpty true archives personal appointments`() {
         appointmentService.processBatch(listOf(apt("s1")), TEST_ACCOUNT)
 
         val body = manifest(appointments = emptyList(), confirmedEmpty = true, type = "appointments")
@@ -130,10 +130,10 @@ class SyncControllerIntegrationTest {
                 .content(objectMapper.writeValueAsString(body))
         )
             .andExpect(status().isOk)
-            .andExpect(jsonPath("$.appointments.toDownload[0].syncId").value("s1"))
+            .andExpect(jsonPath("$.appointments.toDownload", hasSize<Any>(0)))
 
         val s1 = appointmentRepository.findCurrentOrArchivedBySyncId(TEST_ACCOUNT, "s1")
-        assertThat(s1?.deletedAt).describedAs("s1 must NOT be archived even with confirmedEmpty=true — merge model ignores confirmedEmpty").isNull()
+        assertThat(s1?.deletedAt).describedAs("s1 must be archived when phone explicitly confirms empty").isNotNull()
     }
 
     // -------------------------------------------------------------------------
@@ -291,11 +291,11 @@ class SyncControllerIntegrationTest {
     }
 
     // -------------------------------------------------------------------------
-    // SM-M1: Gerät 2 hat andere Termine als Server → Merge: toDownload + toUpload, kein Archivieren
+    // SM-M1: Gerät 2 hat andere Termine als Server → Source of truth: server archiviert fehlende Termine
     // -------------------------------------------------------------------------
 
     @Test
-    fun `SM-M1 second device with different appointments downloads server appointments and uploads its own`() {
+    fun `SM-M1 second device with different appointments archives missing server appointments and uploads its own`() {
         // Device 1 has already synced: server has x1 and y1
         appointmentService.processBatch(listOf(apt("x1"), apt("y1")), TEST_ACCOUNT)
 
@@ -314,14 +314,13 @@ class SyncControllerIntegrationTest {
             .andExpect(status().isOk)
             // Phone's appointments absent from server must be queued for upload
             .andExpect(jsonPath("$.appointments.toUpload", hasSize<Any>(2)))
-            // Server appointments missing from phone must be downloaded — NOT archived
-            .andExpect(jsonPath("$.appointments.toDownload", hasSize<Any>(2)))
+            .andExpect(jsonPath("$.appointments.toDownload", hasSize<Any>(0)))
 
-        // Server appointments must NOT be soft-archived
+        // Server appointments are archived because they are missing from the phone manifest.
         val x1 = appointmentRepository.findCurrentOrArchivedBySyncId(TEST_ACCOUNT, "x1")
         val y1 = appointmentRepository.findCurrentOrArchivedBySyncId(TEST_ACCOUNT, "y1")
-        assertThat(x1?.deletedAt).describedAs("x1 must NOT be archived — merge model").isNull()
-        assertThat(y1?.deletedAt).describedAs("y1 must NOT be archived — merge model").isNull()
+        assertThat(x1?.deletedAt).describedAs("x1 must be archived when missing from phone manifest").isNotNull()
+        assertThat(y1?.deletedAt).describedAs("y1 must be archived when missing from phone manifest").isNotNull()
     }
 
     // -------------------------------------------------------------------------

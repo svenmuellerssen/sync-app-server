@@ -198,6 +198,30 @@ class ContactsControllerIntegrationTest {
         assertThat(result).isNotNull
     }
 
+    @Test
+    fun `should upload contact without 500 when same syncId already exists as older version in same account`() {
+        postContacts(TEST_TOKEN, contact("shared-sync", "lk-old", 100L, "Alice Old"))
+
+        val result = mockMvc.perform(
+            post("/contacts")
+                .header("X-Sync-Token", TEST_TOKEN)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(objectMapper.writeValueAsString(
+                    ContactBatchRequest(
+                        contacts = listOf(contact("shared-sync", "lk-new", 200L, "Alice New"))
+                    )
+                ))
+        )
+            .andExpect(status().isOk)
+            .andReturn()
+
+        val response = objectMapper.readValue(result.response.contentAsString, BackupResponse::class.java)
+        assertThat(response.contactsStored).isEqualTo(1)
+        val active = contactRepository.findAllByAccountNameAndDeletedAtIsNull(TEST_ACCOUNT)
+        assertThat(active).hasSize(1)
+        assertThat(active.single().displayName).isEqualTo("Alice New")
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------

@@ -33,7 +33,7 @@ Alle Endpunkte außer `/auth/login` und `/auth/register` erfordern den Header `X
 | `GET` | `/contacts/count` | Anzahl gespeicherter Kontakte → `{ accountName, count }` |
 | `POST` | `/appointments` | Termin-Batch hochladen → `{ appointmentsStored, skipped, newCalendars: [{serverCalendarId, name, calendarType}] }` |
 | `GET` | `/appointments` | Alle aktuellen Termine (nur aktive HAS_APPOINTMENT-Kante) → `{ accountName, appointments: […] }` |
-| `GET` | `/appointments/count` | Anzahl aktueller Termine → `{ accountName, count }` |
+| `GET` | `/appointments/count` | Anzahl aktueller Termine (logisch dedupliziert per `syncId`) → `{ accountName, count }` |
 | `GET` | `/appointments/{syncId}/history` | Alle Versionen eines Termins, neueste zuerst → `{ syncId, versions: […] }` |
 | `POST` | `/booking` | Booking anlegen: `{ title, description?, startTime, endTime, locationName?, sharedCalendarId }` → `BookingResponse` |
 | `GET` | `/booking` | Eigene Bookings des Tokens → `List<BookingResponse>` |
@@ -78,11 +78,12 @@ Body: `{ accountName, contacts: [{ syncId, lastUpdatedAt }], appointments: [{ sy
 - `toDownload` — Nodes die beim Client fehlen (Server schickt vollständige DTOs)
 - `toUpdate` — Server hat neuere Version (`lastUpdatedAt` > Client-Timestamp) → Client soll überschreiben
 - **G1 — confirmedEmpty-Guard:** Termine werden nur soft-archiviert wenn `confirmedEmpty=true` (App explizit bestätigt, Kalender-Lese-Berechtigung OK und Gerät wirklich leer) **oder** wenn das mitgeschickte Manifest nicht leer ist. Leeres Manifest ohne `confirmedEmpty=true` löst keine destruktiven Aktionen aus
-- **G3 — eigene Termine in toDownload:** Termine die auf dem Server existieren aber nicht im Manifest des Clients sind, erscheinen in `toDownload` statt ignoriert zu werden
+- **G3 — Source-of-truth für persönliche Termine:** Persönliche Termine, die im Manifest des Clients fehlen, werden serverseitig soft-archiviert (außer G1-Guard-Fall: leeres Manifest ohne `confirmedEmpty=true`)
 - **G4 — Dedup per Soft-Archive:** Duplikate (gleiche `DedupKey`-Kombination) werden per `removeHasAppointmentEdge` soft-archiviert — kein Hard-Delete, History bleibt erhalten
+- **Runtime-Dedup pro Account:** Vor dem Manifest-Diff dedupliziert der Server alle mehrfach aktiven `HAS_APPOINTMENT`-Kanten pro `syncId` des Accounts (Verlierer werden soft-archiviert)
 - **G5 — Shared-Calendar-Schutz:** Termine aus Shared Calendars anderer Accounts werden nicht vom eigenen Manifest des Owners archiviert; `findAllCurrentByAccountName` filtert auf `calendarType: LOCAL`
 - Shared-Calendar-Termine anderer Mitglieder werden in `toDownload`/`toUpdate` mitgeliefert, damit sie auf allen Mitglieder-Geräten erscheinen
-- ⚠ Derzeit ist `/sync/manifest` nicht im Android-Client verkabelt (Client nutzt direkte Upload/Download-Endpunkte)
+- Der Android-Client nutzt `/sync/manifest` im `CalendarSyncWorker` als ersten Schritt vor Upload/Download.
 
 ---
 
@@ -91,6 +92,8 @@ Body: `{ accountName, contacts: [{ syncId, lastUpdatedAt }], appointments: [{ sy
 Body: `{ accountName, contacts: [ ContactDto… ] }`
 
 - Upsert-Key: `syncId` (UUID, von App generiert, in `ContactsContract.Data` gespeichert). Fallback auf `lookupKey` für ältere App-Versionen ohne `syncId`
+- `syncId`-Preload im Upload ist account-gescoped (`findAllBySyncIdIn(accountName, syncIds)`) — verhindert Cross-Account-Kollisionen bei gleichen `syncId`-Werten
+- Beim Server-Start entfernt `Neo4jIndexManager` alte UNIQUE-Constraints auf `(:Contact).syncId` und stellt stattdessen einen normalen Index sicher (`contact_syncId`). So bleibt Kontakt-History mit gleicher `syncId` pro Version möglich und Uploads laufen nicht mehr in `ConstraintValidationFailed`
 - Logik: existiert der Kontakt mit gleicher `syncId` und `lastUpdatedAt >= incoming` → überspringen. Sonst: alten Node löschen + neuen anlegen
 - Keine Versionierung bei Kontakten — es gibt immer genau einen Node pro Kontakt
 
@@ -104,6 +107,7 @@ Body: `{ accountName, appointments: [ AppointmentDto… ] }`
 - `AppointmentDto.serverCalendarId` — UUID des `CalendarNode` auf dem Server; beim ersten Sync `null` → Server legt CalendarNode per find-or-create an und gibt ihn in `newCalendars` zurück; App schreibt ihn dann in `CalendarContract.Calendars._SYNC_ID`
 - **Stale-Overwrite-Schutz:** `dto.lastUpdatedAt < existing.lastUpdatedAt` → Termin wird übersprungen (Upload älter als aktuelle Server-Version)
 - **Hash-basierter Skip:** Server berechnet SHA-256 über alle Termin-Felder. Ist der Hash identisch mit dem gespeicherten → Termin wird übersprungen (`skipped++`)
+- **Runtime-Deduplizierung pro `syncId`:** Vor jedem Upsert entfernt der Server doppelte aktive `HAS_APPOINTMENT`-Kanten für `(accountName, syncId)` und archiviert die Verlierer-Node(s). Damit werden Alt-Duplikate auch ohne Neustart bereinigt.
 - **Versionierung bei Änderung:** Hash unterscheidet sich → alter `HAS_APPOINTMENT`-Edge entfernen → neuen Node speichern → neuen `HAS_APPOINTMENT`-Edge setzen → `(neu)-[:PREVIOUS_VERSION]->(alt)` im Graph
 - **Kalender-Verschiebung:** Wenn `serverCalendarId` im DTO von der im aktuell gebundenen `HAS_APPOINTMENT`-Edge abweicht, wird der Edge vom alten CalendarNode entfernt und am neuen gesetzt
 - `calendarAccountType = "LOCAL"` → lokaler Gerät-Kalender (wird beim Restore wiederhergestellt, inkl. `calendarColor`)
@@ -318,7 +322,7 @@ Bestehende geteilte Google-Kalender werden getracked:
 |---|---|---|
 | G1 | Leeres Manifest archiviert alle Server-Termine (stiller Datenverlust) | `confirmedEmpty`-Guard in `SyncController` |
 | G2 | Slot-Cache nicht invalidiert bei Appointment-Upload | `slotService.invalidateRange()` in `AppointmentService` |
-| G3 | Manifest gibt eigene Termine nicht in `toDownload` zurück | Eigene Termine fließen in Download-Pfad wenn auf Server aber nicht im Client-Manifest |
+| G3 | Manifest-Rekonsiliation für persönliche Termine fehlte/war inkonsistent | Persönliche Termine, die im Client-Manifest fehlen, werden über `archiveOrphanedPersonalAppointments` soft-archiviert (mit G1-Guard) |
 | G4 | Dedup macht Hard-Delete (zerstört History-Chain) | Dedup verwendet `removeHasAppointmentEdge` (Soft-Archive) |
 | G5 | Shared-Calendar-Termine werden vom Owner-Manifest archiviert | `findAllCurrentByAccountName` filtert `calendarType: LOCAL`; SharedCal-Termine separat behandelt |
 | G6 | Race Condition Doppelbuchung bei Slot-Buchung | Overlap-Check mit `@Transactional` + `findAllOverlappingRange()` in `createBooking` und `updateBooking` |
@@ -340,7 +344,7 @@ Bestehende geteilte Google-Kalender werden getracked:
   `findAllByAccountName()` ohne `deletedAt`-Filter — Phone wird aufgefordert, soft-deleted Kontakte zu synchen.
 
 - [x] **N+1 Query im Contact-Upload** (`ContactsController.uploadContacts`) ✅  
-  Pro Kontakt ein einzelner `findBySyncId()`-DB-Hit. Bei 1000 Kontakten = 1000 Queries. Fix: Batch-Lookup `findAllBySyncIdIn()` + Map.
+  Pro Kontakt ein einzelner `findBySyncId()`-DB-Hit. Bei 1000 Kontakten = 1000 Queries. Fix: account-gescopter Batch-Lookup `findAllBySyncIdIn(accountName, syncIds)` + Map.
 
 - [x] **`senderName` nicht validiert → Impersonation** (`BookingController.createMessage`) ✅  
   Chat-Messages lesen `senderName` aus dem Request-Body. Jeder kann Nachrichten unter fremdem Namen schreiben. Fix: `senderName = accountName` aus Token setzen.
@@ -364,7 +368,7 @@ Bestehende geteilte Google-Kalender werden getracked:
 - [x] `CalendarRepository.findByCalendarId`: kein `deletedAt IS NULL`-Filter ✅  
   Auf `@Query` mit `WHERE cal.deletedAt IS NULL` umgestellt.
 - [x] `SlotService.findAvailableSlots`: soft-archivierte Appointments blockieren noch Slots ✅  
-  `AppointmentRepository.findAllOverlappingRange` prüft jetzt `n.deletedAt IS NULL` für beide SharedCalendar-Branches. `countAllCurrentByAccountName` ebenfalls gefiltert.
+  `AppointmentRepository.findAllOverlappingRange` prüft jetzt `n.deletedAt IS NULL` für beide SharedCalendar-Branches. `countAllCurrentByAccountName` zählt logisch dedupliziert über `syncId` (Fallback `id(a)` wenn `syncId` fehlt).
 - [x] `BookingController.addInvitees`: soft-deleted Kontakte können als Invitee gespeichert werden ✅  
   Bereits in vorherigem Schritt gefixt (`findAllActiveByAccountNameAndLookupKeyIn`).
 

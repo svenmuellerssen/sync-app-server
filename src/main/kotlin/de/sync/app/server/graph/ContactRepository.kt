@@ -13,8 +13,8 @@ interface ContactRepository : Neo4jRepository<ContactNode, Long> {
     @Query("MATCH (c:Contact {lookupKey: \$lookupKey, accountName: \$accountName}) RETURN c LIMIT 1")
     fun findByLookupKeyAndAccountName(lookupKey: String, accountName: String): ContactNode?
 
-    @Query("MATCH (c:Contact) WHERE c.syncId IN \$syncIds AND c.deletedAt IS NULL RETURN c")
-    fun findAllBySyncIdIn(syncIds: List<String>): List<ContactNode>
+    @Query("MATCH (c:Contact {accountName: \$accountName}) WHERE c.syncId IN \$syncIds AND c.deletedAt IS NULL RETURN c")
+    fun findAllBySyncIdIn(accountName: String, syncIds: List<String>): List<ContactNode>
 
     @Query("MATCH (c:Contact {accountName: \$accountName}) WHERE c.lookupKey IN \$lookupKeys RETURN c")
     fun findAllByAccountNameAndLookupKeyIn(accountName: String, lookupKeys: List<String>): List<ContactNode>

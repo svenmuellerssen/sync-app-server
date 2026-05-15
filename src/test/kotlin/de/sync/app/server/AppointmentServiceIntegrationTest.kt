@@ -401,6 +401,9 @@ class AppointmentServiceIntegrationTest {
         assertThat(batchResult.stored + batchResult.skipped)
             .describedAs("batch must not roll back — exactly one entry stored or skipped")
             .isEqualTo(1)
+        assertThat(countHasAppointmentEdges("s-bug2"))
+            .describedAs("runtime dedup must collapse duplicate active edges for one syncId")
+            .isEqualTo(1L)
     }
 
     // -------------------------------------------------------------------------
@@ -496,6 +499,14 @@ class AppointmentServiceIntegrationTest {
         driver.session().use { session ->
             session.run(
                 "MATCH (:Appointment {syncId: \$syncId})-[:PREVIOUS_VERSION]->(:Appointment {syncId: \$syncId}) RETURN count(*) AS c",
+                mapOf("syncId" to syncId),
+            ).single()["c"].asLong()
+        }
+
+    private fun countHasAppointmentEdges(syncId: String): Long =
+        driver.session().use { session ->
+            session.run(
+                "MATCH ()-[:HAS_APPOINTMENT]->(a:Appointment {syncId: \$syncId}) RETURN count(*) AS c",
                 mapOf("syncId" to syncId),
             ).single()["c"].asLong()
         }

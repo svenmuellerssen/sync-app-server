@@ -80,6 +80,16 @@ class SyncController(
     }
 
     private fun buildAppointmentManifest(request: ManifestRequest, accountName: String): AppointmentManifest {
+        val runtimeDedupRemoved = appointmentRepository.deduplicateHasAppointmentEdgesForAccount(
+            accountName = accountName,
+            now = System.currentTimeMillis(),
+        )
+        var invalidatedSlotCache = false
+        if (runtimeDedupRemoved > 0) {
+            slotService.invalidateAccount(accountName)
+            invalidatedSlotCache = true
+        }
+
         val localMap = request.appointments.associateBy { it.syncId }
         val now = System.currentTimeMillis()
 
@@ -111,13 +121,29 @@ class SyncController(
             else appointmentRepository.findAllTombstonedPersonalByAccountNameAndSyncIdIn(accountName, localSyncIds)
                 .map { it.syncId }.toSet()
 
-        // Merge model: appointments missing from phone go to toDownload (never soft-archived).
+        // Manifest is the source of truth for personal appointments:
+        // if phone sent any entries OR explicitly confirmed empty, archive missing personal entries.
+        val shouldArchiveMissingPersonal = localMap.isNotEmpty() || request.confirmedEmpty
+        if (shouldArchiveMissingPersonal) {
+            appointmentRepository.archiveOrphanedPersonalAppointments(accountName, localSyncIds, now)
+            if (!invalidatedSlotCache) {
+                slotService.invalidateAccount(accountName)
+                invalidatedSlotCache = true
+            }
+        }
+
+        // Re-read active nodes after possible runtime dedup / archive so response reflects current state.
+        val currentPersonalNodes = appointmentRepository.findAllCurrentByAccountName(accountName)
+        val currentOwnSharedNodes = appointmentRepository.findAllCurrentSharedByAccountName(accountName)
+        val currentServerNodes = currentPersonalNodes + currentOwnSharedNodes
+        val currentServerMap = currentServerNodes.associateBy { it.syncId }
+
         // Tombstoned syncIds are excluded from toUpload — don't re-upload explicitly deleted appointments.
-        val toUpload = (localMap.keys - serverMap.keys - tombstoneSyncIds).toList()
+        val toUpload = (localMap.keys - currentServerMap.keys - tombstoneSyncIds).toList()
 
         // Personal appointments: missing on phone → toDownload; server newer → toUpdate.
-        val personalToDownload = personalNodes.filter { it.syncId !in localMap }.map { it.toDto() }
-        val personalToUpdate = personalNodes.filter { node ->
+        val personalToDownload = currentPersonalNodes.filter { it.syncId !in localMap }.map { it.toDto() }
+        val personalToUpdate = currentPersonalNodes.filter { node ->
             val local = localMap[node.syncId]
             local != null && node.lastUpdatedAt > local.lastUpdatedAt
         }.map { it.toDto() }
